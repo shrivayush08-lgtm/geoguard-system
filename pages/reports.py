@@ -9,139 +9,291 @@ Provides:
 - Formal Geotechnical Incident Dossier generator (Markdown/HTML printable format)
 - Regulatory NDMA compliance audit formatting
 """
+"""
+GEOGUARD | Reports & Downloads
+Dark mission-control design with one-click exports.
+"""
+"""
+GeoGuard Reports & Data Center — pages/reports.py
+Dashboard-style reporting page with one-click CSV exports and incident report
+preview plus PDF, HTML, and Markdown downloads.
+"""
 
-import streamlit as st
+import html
+from datetime import datetime, timezone
+
 import pandas as pd
-from datetime import datetime
-from database.db import get_connection, get_road_sections, get_response_teams
-from modules.report_generator import convert_df_to_csv, generate_incident_report_markdown
-from modules.ui import render_html
+import streamlit as st
 
-def render_reports_page(enriched_stations):
-    """Renders the reports and data export management view."""
-    st.markdown("<div class='hud-eyebrow'>REGULATORY REPORTING & ARCHIVES</div>", unsafe_allow_html=True)
-    st.markdown("<h2 style='margin-top:0;'>Reports & Data Download Center</h2>", unsafe_allow_html=True)
+from database.db import (
+    get_connection,
+    get_road_sections,
+    get_response_teams,
+)
+from modules.report_generator import convert_df_to_csv
 
-    # 1. CSV Data Export Hub
-    st.markdown("### 📥 Telemetry & Event Log CSV Exports")
-    st.caption("Export historical time-series records for GIS analysis, spatial modeling, or regulatory auditing:")
 
-    exp_col1, exp_col2, exp_col3, exp_col4 = st.columns(4)
-
+def read_table(query):
     conn = get_connection()
+    try:
+        return pd.read_sql_query(query, conn)
+    finally:
+        conn.close()
 
-    # Telemetry CSV
-    with exp_col1:
-        telemetry_df = pd.read_sql_query("SELECT * FROM telemetry_history ORDER BY reading_id DESC LIMIT 1000", conn)
-        t_csv = convert_df_to_csv(telemetry_df)
-        render_html(f"""
-        <div style='background: rgba(13, 24, 41, 0.9); border: 1px solid #1B2F4C; border-radius: 6px; padding: 14px; text-align: center; margin-bottom: 8px;'>
-            <div style='font-size: 20px;'>📊</div>
-            <div style='font-weight: 700; color: #F0F6FC; margin: 4px 0 2px 0;'>Telemetry Log</div>
-            <div class='font-mono' style='font-size: 11px; color: #00F0FF;'>{len(telemetry_df)} Records</div>
-        </div>
-        """)
-        st.download_button(
-            label="Download Telemetry CSV",
-            data=t_csv,
-            file_name=f"geoguard_telemetry_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
 
-    # Alerts CSV
-    with exp_col2:
-        alerts_df = pd.read_sql_query("SELECT * FROM alerts ORDER BY alert_id DESC", conn)
-        a_csv = convert_df_to_csv(alerts_df)
-        render_html(f"""
-        <div style='background: rgba(13, 24, 41, 0.9); border: 1px solid #1B2F4C; border-radius: 6px; padding: 14px; text-align: center; margin-bottom: 8px;'>
-            <div style='font-size: 20px;'>🚨</div>
-            <div style='font-weight: 700; color: #F0F6FC; margin: 4px 0 2px 0;'>Incident Alerts</div>
-            <div class='font-mono' style='font-size: 11px; color: #FF2A4D;'>{len(alerts_df)} Incidents</div>
-        </div>
-        """)
-        st.download_button(
-            label="Download Alerts CSV",
-            data=a_csv,
-            file_name=f"geoguard_alerts_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+def val(row, key, default="Not recorded"):
+    value = row.get(key, default)
+    if value is None or pd.isna(value):
+        return default
+    value = str(value).strip()
+    return value if value and value.lower() != "nan" else default
 
-    # Road Sections CSV
-    with exp_col3:
-        road_df = get_road_sections()
-        r_csv = convert_df_to_csv(road_df)
-        render_html(f"""
-        <div style='background: rgba(13, 24, 41, 0.9); border: 1px solid #1B2F4C; border-radius: 6px; padding: 14px; text-align: center; margin-bottom: 8px;'>
-            <div style='font-size: 20px;'>🚧</div>
-            <div style='font-weight: 700; color: #F0F6FC; margin: 4px 0 2px 0;'>Road Status</div>
-            <div class='font-mono' style='font-size: 11px; color: #00E5A3;'>{len(road_df)} Sectors</div>
-        </div>
-        """)
-        st.download_button(
-            label="Download Roads CSV",
-            data=r_csv,
-            file_name=f"geoguard_road_sections_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
 
-    # Response Teams CSV
-    with exp_col4:
-        teams_df = get_response_teams()
-        tm_csv = convert_df_to_csv(teams_df)
-        render_html(f"""
-        <div style='background: rgba(13, 24, 41, 0.9); border: 1px solid #1B2F4C; border-radius: 6px; padding: 14px; text-align: center; margin-bottom: 8px;'>
-            <div style='font-size: 20px;'>🚒</div>
-            <div style='font-weight: 700; color: #F0F6FC; margin: 4px 0 2px 0;'>Response Units</div>
-            <div class='font-mono' style='font-size: 11px; color: #FFB000;'>{len(teams_df)} Units</div>
-        </div>
-        """)
-        st.download_button(
-            label="Download Teams CSV",
-            data=tm_csv,
-            file_name=f"geoguard_response_units_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
+def build_report(alert, stations):
+    station_id = val(alert, "station_id")
 
-    conn.close()
-
-    st.markdown("<hr style='border:0; border-top:1px solid #1B2F4C; margin: 20px 0;'>", unsafe_allow_html=True)
-
-    # 2. Formal Geotechnical Incident Dossier Generator
-    st.markdown("### 📋 Formal Geotechnical Incident Dossier Compiler")
-    st.caption("Compile a standardized NDMA / BRO disaster event dossier for government archives:")
-
-    if alerts_df.empty:
-        st.info("No alert records available to compile incident dossiers.")
-        return
-
-    alert_options = {
-        row["alert_id"]: f"Incident #{row['alert_id']} — Sector {row['station_id']} ({row['risk_level']}) [{row['timestamp']}]"
-        for _, row in alerts_df.iterrows()
-    }
-    
-    selected_alert_id = st.selectbox(
-        "Select Target Incident Record",
-        list(alert_options.keys()),
-        format_func=lambda x: alert_options[x]
+    station = next(
+        (
+            s for s in (stations or [])
+            if str(s.get("id", s.get("station_id", "")))
+            == str(station_id)
+        ),
+        {},
     )
 
-    alert_row = alerts_df[alerts_df["alert_id"] == selected_alert_id].iloc[0].to_dict()
-    station_match = next((s for s in enriched_stations if s["id"] == alert_row["station_id"]), None)
+    score = val(alert, "risk_score")
+    coordinates = "Not recorded"
 
-    # Generate Markdown Dossier
-    report_md = generate_incident_report_markdown(alert_row, station_info=station_match)
+    try:
+        if station.get("lat") is not None and station.get("lon") is not None:
+            coordinates = (
+                f"{float(station['lat']):.5f}, "
+                f"{float(station['lon']):.5f}"
+            )
+    except (TypeError, ValueError):
+        pass
 
-    with st.expander("📄 Formal Incident Dossier Document Preview", expanded=True):
-        st.markdown(report_md)
+    return {
+        "id": val(alert, "alert_id"),
+        "station": station_id,
+        "location": val(station, "name", station_id),
+        "corridor": val(station, "highway_corridor"),
+        "coordinates": coordinates,
+        "time": val(alert, "timestamp"),
+        "risk": val(alert, "risk_level", "UNKNOWN").upper(),
+        "score": f"{score}/100" if score != "Not recorded" else score,
+        "status": val(alert, "status", "NEW"),
+        "reason": val(alert, "reason", "No trigger reason recorded."),
+        "generated": datetime.now(timezone.utc).strftime(
+            "%d %b %Y, %H:%M UTC"
+        ),
+    }
 
-    st.download_button(
-        label="📥 Download Geotechnical Incident Dossier (.md)",
-        data=report_md.encode('utf-8'),
-        file_name=f"GEO_INCIDENT_REPORT_{selected_alert_id}.md",
-        mime="text/markdown",
-        type="primary"
+
+def make_html(d):
+    esc = lambda key: html.escape(str(d[key]))
+
+    risk_color = (
+        "#ff4058" if d["risk"] == "CRITICAL"
+        else "#ffad42" if d["risk"] == "HIGH"
+        else "#36d6e7"
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GeoGuard Incident {esc('id')}</title>
+<style>
+body{{margin:0;background:#08111f;color:#edf5ff;
+font:15px/1.6 Arial,sans-serif}}
+main{{max-width:850px;margin:30px auto;padding:22px}}
+header{{border-bottom:2px solid #36d6e7;padding-bottom:18px}}
+.brand{{color:#36d6e7;letter-spacing:2px;font-size:12px}}
+.muted,.label{{color:#9db0c8}}
+.badge{{display:inline-block;border:1px solid {risk_color};
+color:{risk_color};padding:4px 10px;border-radius:5px;font-weight:bold}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+gap:12px;margin:22px 0}}
+.card,.section{{background:#101e31;border:1px solid #263b55;
+border-radius:10px;padding:16px;margin-bottom:12px}}
+.label{{font-size:11px;letter-spacing:1px}}
+.value{{font-size:20px;font-weight:bold;overflow-wrap:anywhere}}
+.notice{{background:#102638;border-left:3px solid #36d6e7;padding:14px}}
+@media print{{body{{background:white;color:#111}}
+.card,.section,.notice{{background:white;color:#111;border-color:#bbb}}}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="brand">GEOGUARD / INCIDENT ARCHIVE</div>
+<h1>Geotechnical Incident Dossier</h1>
+<div class="muted">GEO-INC-{esc('id')} · Generated {esc('generated')}</div>
+<p><span class="badge">{esc('risk')}</span></p>
+</header>
+<div class="grid">
+<div class="card"><div class="label">INCIDENT ID</div>
+<div class="value">#{esc('id')}</div></div>
+<div class="card"><div class="label">RISK INDEX</div>
+<div class="value">{esc('score')}</div></div>
+<div class="card"><div class="label">STATION</div>
+<div class="value">{esc('station')}</div></div>
+<div class="card"><div class="label">STATUS</div>
+<div class="value">{esc('status')}</div></div>
+</div>
+<div class="section"><h2>01 · Location & Detection</h2>
+<p><b>Location:</b> {esc('location')}</p>
+<p><b>Highway corridor:</b> {esc('corridor')}</p>
+<p><b>Coordinates:</b> {esc('coordinates')}</p>
+<p><b>Recorded timestamp:</b> {esc('time')}</p></div>
+<div class="section"><h2>02 · Trigger Evidence</h2>
+<p>{esc('reason')}</p></div>
+<div class="notice"><b>Prototype notice</b><br>
+This system-generated dossier is not an official government warning or
+verified landslide prediction. Verify site conditions and response actions
+with qualified professionals and responsible authorities.</div>
+</main></body></html>"""
+
+
+def render_reports_page(enriched_stations):
+    st.markdown("""
+    <div style="color:#36D6E7;letter-spacing:2px;font-size:12px">
+    GEOGUARD / MISSION CONTROL</div>
+    <h1>Incident Reports & Dossiers</h1>
+    <p style="color:#9DB0C8">
+    Automated incident records · Evidence · Printable reports
+    </p>
+    """, unsafe_allow_html=True)
+
+    try:
+        telemetry = read_table(
+            "SELECT * FROM telemetry_history "
+            "ORDER BY reading_id DESC LIMIT 1000"
+        )
+        alerts = read_table(
+            "SELECT * FROM alerts ORDER BY alert_id DESC"
+        )
+        roads = get_road_sections()
+        teams = get_response_teams()
+    except Exception as exc:
+        st.error("Could not load the report archive.")
+        st.caption(str(exc))
+        return
+
+    a, b, c, d = st.columns(4)
+    a.metric("Telemetry records", len(telemetry))
+    b.metric("Incident records", len(alerts))
+    c.metric("Road sections", len(roads))
+    d.metric("Response teams", len(teams))
+
+    st.markdown("---")
+    st.subheader("Data Export Center")
+
+    exports = [
+        ("Telemetry", telemetry, "telemetry"),
+        ("Incident Alerts", alerts, "alerts"),
+        ("Road Sections", roads, "roads"),
+        ("Response Teams", teams, "teams"),
+    ]
+
+    columns = st.columns(4)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+
+    for col, (title, frame, slug) in zip(columns, exports):
+        with col:
+            st.markdown(
+                f"""<div style="background:#0D1829;border:1px solid #263B55;
+                border-top:2px solid #36D6E7;border-radius:9px;padding:13px">
+                <b>{title}</b><p style="color:#36D6E7">
+                {len(frame)} records</p></div>""",
+                unsafe_allow_html=True,
+            )
+            st.download_button(
+                "Download CSV",
+                data=convert_df_to_csv(frame),
+                file_name=f"geoguard_{slug}_{stamp}.csv",
+                mime="text/csv",
+                key=f"export_{slug}",
+                use_container_width=True,
+            )
+
+    st.markdown("---")
+    st.subheader("🚨 Geotechnical Incident Dossier")
+
+    if alerts.empty:
+        st.info(
+            "No incident has been recorded yet. Use the Emergency Drill "
+            "control in the sidebar to test the simulated alert workflow."
+        )
+        st.caption(
+            "A dossier will appear here after the system records an alert. "
+            "No incident has been fabricated for this report."
+        )
+        return
+
+    if "alert_id" not in alerts.columns:
+        st.error("The alerts table does not contain alert_id.")
+        return
+
+    # Most recent alert is selected automatically.
+    alert = alerts.iloc[0].to_dict()
+    report = build_report(alert, enriched_stations)
+    report_html = make_html(report)
+
+    st.markdown(
+        f"""<div style="background:#0A101A;border:1px solid #263B55;
+        border-left:4px solid #FF4058;border-radius:10px;padding:18px">
+        <div style="color:#36D6E7;letter-spacing:2px;font-size:11px">
+        LATEST RECORDED INCIDENT</div>
+        <h2 style="margin-bottom:4px">Incident #{html.escape(report['id'])}</h2>
+        <p style="color:#9DB0C8;margin-top:0">
+        {html.escape(report['location'])} ·
+        {html.escape(report['time'])}</p></div>""",
+        unsafe_allow_html=True,
+    )
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Risk level", report["risk"])
+    m2.metric("Risk index", report["score"])
+    m3.metric("Status", report["status"])
+
+    if st.button(
+        "↗ Open Latest Incident Dossier",
+        type="primary",
+        use_container_width=True,
+    ):
+        st.session_state["dossier_open"] = report["id"]
+
+    if st.session_state.get("dossier_open") == report["id"]:
+        st.markdown("### Geotechnical Incident Dossier")
+        st.markdown(f"**Incident ID:** `{report['id']}`")
+        st.markdown(f"**Station:** {report['station']}")
+        st.markdown(f"**Location:** {report['location']}")
+        st.markdown(f"**Highway corridor:** {report['corridor']}")
+        st.markdown(f"**Coordinates:** {report['coordinates']}")
+        st.markdown(f"**Recorded timestamp:** {report['time']}")
+        st.markdown(f"**Risk level:** {report['risk']}")
+        st.markdown(f"**Risk index:** {report['score']}")
+        st.markdown(f"**Incident status:** {report['status']}")
+        st.markdown("#### Recorded trigger")
+        st.write(report["reason"])
+
+        st.download_button(
+            "⬇ Download / Open HTML Dossier",
+            data=report_html.encode("utf-8"),
+            file_name=f"GEO_INCIDENT_DOSSIER_{report['id']}.html",
+            mime="text/html",
+            use_container_width=True,
+            key=f"dossier_download_{report['id']}",
+        )
+        st.caption(
+            "Open the downloaded HTML file in your browser. "
+            "Use Print → Save as PDF to create a PDF copy."
+        )
+
+    st.markdown("---")
+    st.caption(
+        "GeoGuard is an engineering prototype. Risk thresholds and outputs "
+        "require field calibration and geotechnical validation."
     )

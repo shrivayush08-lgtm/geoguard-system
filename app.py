@@ -18,7 +18,7 @@ WHERE THIS CODE IS USED AND WHAT IT DOES:
    - Sets wide layout, browser title, and shield icon via `st.set_page_config()`.
    - Injects custom dark command-center HUD stylesheet via `inject_custom_css()`.
 3. Session State Management:
-   - Manages live telemetry state, operating mode (Simulation vs Hardware Serial),
+   - Manages live telemetry states, operating mode (Simulation vs Hardware ESP32),
      the Highway Interlock state machine, and communication gateways.
 4. Serial & Telemetry Ingestion:
    - Simulation Mode: executes smooth random walk or deterministic SIH test scenarios
@@ -33,7 +33,7 @@ WHERE THIS CODE IS USED AND WHAT IT DOES:
    - Preserves the 7 core operational views:
      1. Overview Dashboard
      2. Live Sensor Monitoring & Interlock Center
-     3. Geographic Risk Map
+     3. Geographic Risk Map & Live GPS Assets
      4. Alert Center
      5. Highway Safety & Road Closures
      6. Reports & Downloads
@@ -68,15 +68,20 @@ from modules.data_store import (
     enrich_station_telemetry, # Calculates multi-factor risk scores across all stations
     get_system_kpis           # Computes active stations, alerts, and system health
 )
-from modules.hardware_reader import SerialTelemetryGateway # Non-blocking PySerial gateway
+from modules.hardware_reader import SerialTelemetryGateway # Non-blocking PySerial ESP32 gateway
 from modules.interlock import HighwayInterlockSystem       # Highway interlock & dispatch logger
+from modules.gps_simulator import (
+    DEFAULT_GPS_UNITS,  # Default 5 mobile emergency response & patrol units
+    simulate_gps_tick   # Kinematic waypoint advancement along NH-58 corridor
+)
+from modules.gps_reader import GPSHardwareGateway # Modular real GPS telemetry gateway
 
 # ---------------------------------------------------------------------------
 # SECTION 2: Page View Renderers (Streamlined 7 Core Operational Pages)
 # ---------------------------------------------------------------------------
 from pages.overview import render_overview_page             # 1. Overview Dashboard
 from pages.live_sensor import render_live_sensor_page       # 2. Live Sensor Monitoring & Interlock Center
-from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map
+from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map & Live GPS Assets
 from pages.alert_center import render_alert_center_page     # 4. Alert Center & Incident Queue
 from pages.highway_safety import render_highway_safety_page # 5. Highway Safety & Road Closures
 from pages.reports import render_reports_page               # 6. Reports & Data Downloads
@@ -107,11 +112,17 @@ inject_custom_css()
 if 'stations_telemetry' not in st.session_state:
     st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
 
+if 'gps_units' not in st.session_state:
+    st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
+
 if 'operating_mode' not in st.session_state:
     st.session_state.operating_mode = "SIMULATION"
 
 if 'serial_gateway' not in st.session_state:
     st.session_state.serial_gateway = SerialTelemetryGateway(default_port="COM3", default_baud=115200)
+
+if 'gps_gateway' not in st.session_state:
+    st.session_state.gps_gateway = GPSHardwareGateway()
 
 if 'interlock_system' not in st.session_state:
     st.session_state.interlock_system = HighwayInterlockSystem(hysteresis_ticks_required=3)
@@ -126,15 +137,24 @@ if 'auto_tick' not in st.session_state:
     st.session_state.auto_tick = False
 
 # ---------------------------------------------------------------------------
-# SECTION 6: Live Telemetry Ingestion (Simulation Stream vs Physical ESP32)
+# SECTION 6: Live Telemetry Ingestion (Simulation Stream vs Physical Hardware)
 # ---------------------------------------------------------------------------
 if st.session_state.operating_mode == "SIMULATION":
+    # 1. Advance fixed geotechnical monitoring stations
     st.session_state.stations_telemetry = generate_telemetry_tick(
         st.session_state.stations_telemetry,
         emergency=st.session_state.emergency,
         emergency_target=st.session_state.emergency_target
     )
+    # 2. Advance mobile GPS asset tracking fleet along NH-58 corridor waypoints
+    st.session_state.gps_units = simulate_gps_tick(
+        st.session_state.gps_units,
+        elapsed_sec=3.0,
+        emergency=st.session_state.emergency,
+        emergency_target=st.session_state.emergency_target
+    )
 elif st.session_state.operating_mode == "HARDWARE":
+    # 1. Read fixed geotechnical station packet via USB serial (CSV or JSON)
     gw = st.session_state.serial_gateway
     if gw.is_connected:
         packet = gw.read_latest_packet()
@@ -151,6 +171,25 @@ elif st.session_state.operating_mode == "HARDWARE":
                     s["is_simulated"] = False
                     s["is_valid"] = packet.get("is_valid", True)
                     s["timestamp"] = packet.get("timestamp", datetime.now(timezone.utc).isoformat())
+
+    # 2. Read live GPS hardware packets if GPS gateway is active
+    if st.session_state.gps_gateway and st.session_state.gps_gateway.is_connected:
+        gps_packet = st.session_state.gps_gateway.read_latest_packet()
+        if gps_packet:
+            target_u_id = gps_packet.get("unit_id")
+            for u in st.session_state.gps_units:
+                if u["unit_id"] == target_u_id:
+                    u["lat"] = gps_packet.get("lat", u["lat"])
+                    u["lon"] = gps_packet.get("lon", u["lon"])
+                    u["speed_kmh"] = gps_packet.get("speed_kmh", u["speed_kmh"])
+                    u["heading_deg"] = gps_packet.get("heading_deg", u["heading_deg"])
+                    u["altitude_m"] = gps_packet.get("altitude_m", u.get("altitude_m", 620.0))
+                    u["battery_pct"] = gps_packet.get("battery_pct", u.get("battery_pct", 95.0))
+                    u["health_status"] = gps_packet.get("health_status", "NOMINAL")
+                    u["satellites_in_view"] = gps_packet.get("satellites_in_view", u.get("satellites_in_view", 8))
+                    u["last_valid_ping"] = gps_packet.get("last_valid_ping", u["last_valid_ping"])
+                    u["data_source"] = "REAL_HARDWARE"
+                    u["is_simulated"] = False
 
 # Calculate real-time risk scores and categories across all stations
 enriched_stations = enrich_station_telemetry(st.session_state.stations_telemetry)
@@ -265,6 +304,11 @@ with st.sidebar:
                     s["vib_g"] = 0.45
             st.session_state.emergency = True
             st.session_state.emergency_target = "GG-001"
+            # Mobilize emergency QRT units
+            for u in st.session_state.gps_units:
+                if u["unit_id"] in ["UNIT-SAR-01", "UNIT-BRO-753"]:
+                    u["health_status"] = "DISPATCHED"
+                    u["incident_assignment"] = "CRISIS DISPATCH — Emergency Response to GG-001 Byasi Gorge"
             st.toast("CRITICAL DANGER: Interlock tripped, Barrier CLOSED, Signals RED!", icon="🔴")
             st.rerun()
 
@@ -272,6 +316,7 @@ with st.sidebar:
         if st.button("↺ Reset Test Scenario", use_container_width=True, help="Restores all sensor nodes and interlocks to nominal baselines"):
             st.session_state.emergency = False
             st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
+            st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
             st.session_state.interlock_system.reset_interlock()
             st.toast("All scenarios and actuators reset to nominal baseline.", icon="✅")
             st.rerun()
@@ -315,6 +360,15 @@ with st.sidebar:
             else ("color: #F59E0B;" if s["risk_level"] == "MODERATE" else "color: #10B981;"))
         )
         st.markdown(f"<div style='font-size: 11px; margin-bottom: 3px;'><span style='{badge_style}'>●</span> <b>{s['id']}</b>: {s['name'][:18]} <span style='float:right; {badge_style}'>{s['risk_score']}</span></div>", unsafe_allow_html=True)
+
+    # Mobile Asset Fleet Quick Status in Sidebar
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='hud-eyebrow'>MOBILE ASSET FLEET</div>", unsafe_allow_html=True)
+    dispatched_units = [u for u in st.session_state.gps_units if u.get("health_status") == "DISPATCHED"]
+    if dispatched_units:
+        st.markdown(f"<div style='font-size: 11px; color: #EF4444;'>🚨 <b>{len(dispatched_units)} Unit(s) Dispatched</b></div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div style='font-size: 11px; color: #10B981;'>● <b>{len(st.session_state.gps_units)} Mobile Units</b> Nominal</div>", unsafe_allow_html=True)
 
     st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 12px 0;'>", unsafe_allow_html=True)
     
