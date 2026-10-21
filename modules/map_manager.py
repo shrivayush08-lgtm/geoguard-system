@@ -5,20 +5,23 @@ Module: modules/map_manager.py
 Purpose: Interactive Geospatial GIS Map, Highway Risk Corridors & Asset Tracking
 =============================================================================
 Renders an interactive Folium map modeled after high-tech disaster control rooms:
-- Dark CartoDB Dark Matter base map (high-contrast command room aesthetic)
+- Standard, clean, un-watermarked OpenStreetMap base layer (no CARTO token required)
 - Multi-station geotechnical sensor nodes (GG-001 through GG-005)
 - Mobile GPS Asset Tracking Layer (Emergency QRTs, BRO Dozers, Highway Police, Ambulances)
 - Color-coded highway corridor segments (NH-58 Himalayan corridor)
 - Dynamic danger radius buffer zones for elevated/critical stations
 - Road closure & incident warning overlays
+- Resilient fallback coordinate handling for missing/malformed GPS packets
 - Rich HTML telemetry inspection popups for both stations and mobile assets
 =============================================================================
 """
 
+import math
 import streamlit as st
 import folium
 from folium import plugins
 from streamlit_folium import st_folium
+from modules.gps_reader import get_safe_fallback_fix
 
 # Color mapping helper for geotechnical risk
 RISK_COLOR_MAP = {
@@ -33,42 +36,44 @@ RISK_COLOR_MAP = {
 ASSET_COLOR_MAP = {
     "Emergency Rescue": "#EF4444",
     "Heavy Engineering": "#F97316",
-    "Highway Police Patrol": "#38BDF8",
+    "Highway Police Patrol": "#0284C7",
     "Emergency Medical": "#10B981",
-    "Field Inspection": "#A855F7"
+    "Field Inspection": "#8B5CF6"
 }
 
 
-def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL", height=500, gps_units=None):
+def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL", height=520, gps_units=None, tile_layer="OpenStreetMap"):
     """
     Renders the professional GIS map with station nodes, highway risk corridors,
-    and mobile GPS asset tracking layer.
+    and mobile GPS asset tracking layer using clean, un-watermarked tile providers.
     """
     # 1. Calculate map center from station coordinates
-    lats = [s["lat"] for s in enriched_stations if s.get("lat") is not None]
-    lons = [s["lon"] for s in enriched_stations if s.get("lon") is not None]
-    center_lat = sum(lats) / len(lats) if lats else 30.18
-    center_lon = sum(lons) / len(lons) if lons else 78.50
+    valid_lats = [s["lat"] for s in enriched_stations if s.get("lat") is not None]
+    valid_lons = [s["lon"] for s in enriched_stations if s.get("lon") is not None]
+    center_lat = sum(valid_lats) / len(valid_lats) if valid_lats else 30.18
+    center_lon = sum(valid_lons) / len(valid_lons) if valid_lons else 78.50
 
-    # Initialize Folium Map with CartoDB Dark Matter
+    # 2. Initialize Folium Map with clean, un-watermarked OpenStreetMap tiles
+    # Removes CartoDB watermarks completely
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=11,
-        tiles="CartoDB dark_matter",
+        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
         control_scale=True
     )
 
-    # 2. Add custom map title / status badge in upper left
+    # 3. Add custom map title / status badge in upper left
     mobile_count = len(gps_units) if gps_units else 0
     mobile_badge = f" | {mobile_count} Mobile Units" if mobile_count > 0 else ""
     title_html = f"""
     <div style="position: fixed; 
-                top: 15px; left: 55px; width: 280px; 
+                top: 15px; left: 55px; width: 285px; 
                 background: rgba(14, 23, 37, 0.94); 
                 border: 1px solid #263449; border-radius: 8px;
-                padding: 10px 14px; z-index: 9999; font-family: 'DM Sans', sans-serif;
+                padding: 10px 14px; z-index: 9999; font-family: 'Segoe UI', sans-serif;
                 box-shadow: 0 4px 12px rgba(0,0,0,0.5); backdrop-filter: blur(5px);">
-        <div style="font-size: 10px; color: #36D6E7; font-weight: 700; letter-spacing: 1.5px;">GIS GEOTECHNICAL GRID</div>
+        <div style="font-size: 10px; color: #38BDF8; font-weight: 700; letter-spacing: 1.5px;">GIS GEOTECHNICAL GRID</div>
         <div style="font-size: 13px; color: #F1F5F9; font-weight: 700; margin-top: 2px;">NH-58 Himalayan Highway Sector</div>
         <div style="font-size: 11px; color: #94A3B8; margin-top: 4px;">
             Active Nodes: 5 Fixed Stations{mobile_badge}
@@ -77,8 +82,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
     """
     m.get_root().html.add_child(folium.Element(title_html))
 
-    # 3. Render Highway Corridor Polyline Segments
-    # Real-world approximate mountain highway coordinates connecting stations along the valley
+    # 4. Render Highway Corridor Polyline Segments
     corridor_segments = [
         {
             "name": "Sector 1: Byasi - Kaudiyala (km 42-58)",
@@ -102,7 +106,6 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
         }
     ]
 
-    # Map station risk to segment colors
     station_risk_lookup = {s["id"]: s for s in enriched_stations}
 
     for seg in corridor_segments:
@@ -122,7 +125,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
             popup=f"<b>{seg['name']}</b><br>Governing Station: {seg['station']}<br>Sector Risk Level: {seg_risk}"
         ).add_to(m)
 
-    # 4. Render Fixed Station Markers & Hazard Buffers
+    # 5. Render Fixed Station Markers & Hazard Buffers
     for stn in enriched_stations:
         r_level = stn["risk_level"]
 
@@ -161,7 +164,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
                     background: #0E1725; color: #F1F5F9; padding: 12px; 
                     border-radius: 8px; width: 230px; border: 1px solid #263449;">
-            <div style="font-size: 10px; color: #36D6E7; font-weight: 700; letter-spacing: 1px;">
+            <div style="font-size: 10px; color: #38BDF8; font-weight: 700; letter-spacing: 1px;">
                 FIXED SENSOR NODE: {stn['id']}
             </div>
             <div style="font-size: 14px; font-weight: 700; margin: 2px 0 6px 0;">
@@ -213,37 +216,62 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
             tooltip=f"[STATION] {stn['id']}: {r_level} ({stn['risk_score']}/100)"
         ).add_to(m)
 
-    # 5. Render Mobile GPS Asset Tracking Layer
+    # 6. Render Mobile GPS Asset Tracking Layer with Robust Fallback Protection
     if gps_units:
         for unit in gps_units:
+            u_id = unit.get("unit_id", "UNIT")
             ulat = unit.get("lat")
             ulon = unit.get("lon")
 
-            # Validate coordinate presence and bounds
+            # Robust coordinate validation with automatic corridor fallback recovery
+            is_fallback = False
             if ulat is None or ulon is None:
-                continue
-            try:
-                ulat = float(ulat)
-                ulon = float(ulon)
-                if not (-90.0 <= ulat <= 90.0) or not (-180.0 <= ulon <= 180.0):
-                    continue
-            except (ValueError, TypeError):
-                continue
+                fb = get_safe_fallback_fix(u_id)
+                ulat, ulon = fb["lat"], fb["lon"]
+                is_fallback = True
+            else:
+                try:
+                    ulat = float(ulat)
+                    ulon = float(ulon)
+                    if not (-90.0 <= ulat <= 90.0) or not (-180.0 <= ulon <= 180.0) or math.isnan(ulat) or math.isnan(ulon):
+                        fb = get_safe_fallback_fix(u_id)
+                        ulat, ulon = fb["lat"], fb["lon"]
+                        is_fallback = True
+                except (ValueError, TypeError):
+                    fb = get_safe_fallback_fix(u_id)
+                    ulat, ulon = fb["lat"], fb["lon"]
+                    is_fallback = True
 
             u_type = unit.get("unit_type", "Emergency Rescue")
-            u_color = unit.get("accent_color", ASSET_COLOR_MAP.get(u_type, "#38BDF8"))
-            glyph = unit.get("icon_glyph", "🚗")
+            u_color = unit.get("accent_color", ASSET_COLOR_MAP.get(u_type, "#0284C7"))
+            glyph = unit.get("icon_glyph", "🚑")
             callsign = unit.get("callsign", unit.get("name", "Asset"))
-            u_id = unit.get("unit_id", "UNIT")
-            speed = unit.get("speed_kmh", 0.0)
-            heading = unit.get("heading_deg", 0.0)
-            altitude = unit.get("altitude_m", 600.0)
-            battery = unit.get("battery_pct", 95.0)
+            
+            try:
+                speed = float(unit.get("speed_kmh", 0.0))
+            except (ValueError, TypeError):
+                speed = 0.0
+
+            try:
+                heading = float(unit.get("heading_deg", 0.0)) % 360.0
+            except (ValueError, TypeError):
+                heading = 0.0
+
+            try:
+                altitude = float(unit.get("altitude_m", 620.0))
+            except (ValueError, TypeError):
+                altitude = 620.0
+
+            try:
+                battery = float(unit.get("battery_pct", 95.0))
+            except (ValueError, TypeError):
+                battery = 95.0
+
             health = unit.get("health_status", "NOMINAL")
             assignment = unit.get("incident_assignment", "Routine Corridor Surveillance")
             is_sim = unit.get("is_simulated", True)
             data_src = unit.get("data_source", "SIMULATED")
-            last_ping = unit.get("last_valid_ping", "N/A")
+            last_ping = str(unit.get("last_valid_ping", "N/A"))
             satellites = unit.get("satellites_in_view", 8)
             is_stale = (health == "STALE")
 
@@ -266,9 +294,16 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
                 """
 
             # Health badge color
-            h_color = "#EF4444" if health in ["CRITICAL", "DISPATCHED"] else ("#F59E0B" if health in ["WARNING", "STALE"] else "#10B981")
+            if health in ["CRITICAL", "DISPATCHED"]:
+                h_color = "#EF4444"
+            elif health in ["WARNING", "STALE"] or is_fallback:
+                h_color = "#F59E0B"
+            else:
+                h_color = "#10B981"
 
-            # High-tech interactive asset popup card
+            fallback_note = "<div style='color: #F59E0B; font-size: 9px; margin-top:2px;'>⚠️ Using Corridor Fallback Coordinates</div>" if is_fallback else ""
+
+            # Interactive High-Tech Pop-up Card
             asset_popup_html = f"""
             <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
                         background: #0B1320; color: #F1F5F9; padding: 12px; 
@@ -280,7 +315,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
                     </div>
                     {source_badge}
                 </div>
-                <div style="font-size: 15px; font-weight: 700; color: #FFFFFF; margin: 2px 0;">
+                <div style="font-size: 14px; font-weight: 700; color: #FFFFFF; margin: 2px 0;">
                     {unit.get('name', u_id)}
                 </div>
                 <div style="font-size: 11px; color: #94A3B8; margin-bottom: 8px;">
@@ -292,6 +327,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
                         <span style="color:#94A3B8;">Position:</span>
                         <b style="color:#38BDF8;">{ulat:.4f}°N, {ulon:.4f}°E</b>
                     </div>
+                    {fallback_note}
                     <div style="display:flex; justify-content:space-between; margin-bottom: 3px;">
                         <span style="color:#94A3B8;">Altitude:</span>
                         <b>{altitude:.1f} m AMSL</b>
@@ -302,7 +338,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
                     </div>
                     <div style="display:flex; justify-content:space-between; margin-bottom: 3px;">
                         <span style="color:#94A3B8;">Azimuth Heading:</span>
-                        <b>{heading:.1f}° ({unit.get('heading_deg', 0):.0f}°)</b>
+                        <b>{heading:.1f}°</b>
                     </div>
                     <div style="display:flex; justify-content:space-between; margin-bottom: 3px;">
                         <span style="color:#94A3B8;">Battery Level:</span>
@@ -328,14 +364,14 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
 
             # Directional heading indicator SVG arrow
             arrow_svg = f"""
-            <svg width="24" height="24" viewBox="0 0 24 24" style="transform: rotate({heading}deg); transform-origin: 50% 50%;">
+            <svg width="22" height="22" viewBox="0 0 24 24" style="transform: rotate({heading}deg); transform-origin: 50% 50%;">
                 <polygon points="12,2 18,22 12,17 6,22" fill="{u_color}" stroke="#FFFFFF" stroke-width="1.5" opacity="0.95"/>
             </svg>
             """
 
-            # Distinct visual marker with beacon pulsing ring
+            # Beacon pulsing ring
             pulse_ring = f"""
-            <div style="position: absolute; width: 44px; height: 44px; top: -10px; left: -10px; 
+            <div style="position: absolute; width: 42px; height: 42px; top: -9px; left: -9px; 
                         border-radius: 50%; border: 2px solid {u_color}; opacity: 0.6; 
                         animation: pulse 2s infinite ease-out;"></div>
             """ if not is_stale else ""
@@ -355,7 +391,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
                             box-shadow: 0 0 10px {u_color}88; font-size: 13px;">
                     {glyph}
                 </div>
-                <div style="position: absolute; top: -14px; left: 1px; width: 24px; height: 24px; pointer-events: none;">
+                <div style="position: absolute; top: -13px; left: 2px; width: 22px; height: 22px; pointer-events: none;">
                     {arrow_svg}
                 </div>
                 {stale_badge}
@@ -373,13 +409,13 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
                 tooltip=f"[ASSET] {u_id} ({callsign}) • {speed:.1f} km/h • {health}"
             ).add_to(m)
 
-    # 6. Add Comprehensive GIS Legend in bottom-right corner
+    # 7. Add Clean GIS Legend in bottom-right corner
     legend_html = """
     <div style="position: fixed; 
-                bottom: 25px; right: 25px; width: 190px; 
+                bottom: 25px; right: 25px; width: 195px; 
                 background: rgba(14, 23, 37, 0.95); 
                 border: 1px solid #263449; border-radius: 8px;
-                padding: 10px 14px; z-index: 9999; font-family: 'DM Sans', sans-serif;
+                padding: 10px 14px; z-index: 9999; font-family: 'Segoe UI', sans-serif;
                 box-shadow: 0 4px 12px rgba(0,0,0,0.5); font-size: 11px;">
         <div style="font-weight: 700; color: #F1F5F9; margin-bottom: 6px; letter-spacing: 0.5px;">GIS LAYER OVERLAYS</div>
         <div style="font-size: 10px; color: #38BDF8; font-weight: 600; margin-bottom: 4px;">FIXED MONITORING STATIONS</div>
@@ -404,7 +440,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
         <div style="font-size: 10px; color: #38BDF8; font-weight: 600; margin-bottom: 4px;">MOBILE GPS ASSETS</div>
         <div style="display: flex; align-items: center; margin-bottom: 3px;">
             <span style="font-size: 11px; margin-right: 6px;">🚑</span>
-            <span style="color: #F1F5F9;">NDRF Alpine QRT</span>
+            <span style="color: #F1F5F9;">NDRF Alpine QRV</span>
         </div>
         <div style="display: flex; align-items: center; margin-bottom: 3px;">
             <span style="font-size: 11px; margin-right: 6px;">🚜</span>
@@ -420,7 +456,7 @@ def render_risk_map(enriched_stations, road_sections_df=None, risk_filter="ALL",
         </div>
 
         <hr style="border:0; border-top: 1px solid #263449; margin: 6px 0;">
-        <div style="font-size: 10px; color: #94A3B8;">Polylines indicate NH-58 highway sectors color-coded by risk.</div>
+        <div style="font-size: 10px; color: #94A3B8;">Clean OpenStreetMap Layer (No Watermark).</div>
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))

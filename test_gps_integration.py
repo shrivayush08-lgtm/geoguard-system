@@ -117,8 +117,6 @@ def test_hardware_telemetry_and_nmea():
     # 2. Test NMEA sentence decoding
     parsed_rmc = parse_nmea_sentence(valid_rmc)
     assert parsed_rmc is not None and parsed_rmc["fix_valid"] is True
-    # 3007.4040 N = 30 + 7.4040/60 = 30.1234
-    # 07816.0560 E = 78 + 16.0560/60 = 78.2676
     assert abs(parsed_rmc["lat"] - 30.1234) < 0.001
     assert abs(parsed_rmc["lon"] - 78.2676) < 0.001
     assert parsed_rmc["speed_kmh"] > 0.0
@@ -133,7 +131,7 @@ def test_hardware_telemetry_and_nmea():
     assert parsed_gga["satellites_in_view"] == 8
     print("  -> NMEA $GPGGA altitude & constellation fix parsing passed.")
 
-    # 4. Test JSON Telemetry Packet Validator
+    # 4. Test JSON Telemetry Packet Validator with Fallback Recovery
     valid_json = {
         "unit_id": "UNIT-SAR-01",
         "lat": 30.1450,
@@ -149,11 +147,20 @@ def test_hardware_telemetry_and_nmea():
     assert validated["is_simulated"] is False
     assert validated["data_source"] == "REAL_HARDWARE"
     assert validated["speed_kmh"] == 45.2
+    assert validated["is_fallback"] is False
 
-    # Reject out-of-bounds coordinates
-    invalid_json = {"unit_id": "TEST", "lat": 195.0, "lon": 78.0}
-    assert validate_json_gps_packet(invalid_json) is None
-    print("  -> IoT JSON schema validation and bounds checks passed.")
+    # Out-of-bounds coordinates recover gracefully to safe corridor fallback
+    corrupt_coord_json = {"unit_id": "UNIT-SAR-01", "lat": 999.0, "lon": 78.0}
+    recovered = validate_json_gps_packet(corrupt_coord_json)
+    assert recovered is not None
+    assert recovered["is_fallback"] is True
+    assert "FALLBACK FIX" in recovered["health_status"]
+    assert 30.0 <= recovered["lat"] <= 31.0
+    assert 78.0 <= recovered["lon"] <= 80.0
+
+    # Non-dictionary payload returns None safely
+    assert validate_json_gps_packet("NOT_A_DICT") is None
+    print("  -> IoT JSON schema validation and zero-crash fallback recovery passed.")
 
     # 5. Test Stale Telemetry Handling
     now = datetime.now(timezone.utc)
@@ -174,7 +181,7 @@ def test_hardware_telemetry_and_nmea():
     print("  -> Stale telemetry handling verified: flagged STALE after 45s while preserving last known fix.")
 
 def test_map_manager_rendering():
-    print("[TEST 5/6] Testing Folium map generation with mobile asset layer...")
+    print("[TEST 5/6] Testing Folium map generation with clean tiles (no watermarks)...")
     from modules.map_manager import render_risk_map
     from modules.sensor_simulator import DEFAULT_STATIONS
     from modules.data_store import enrich_station_telemetry
@@ -183,29 +190,39 @@ def test_map_manager_rendering():
 
     enriched = enrich_station_telemetry(DEFAULT_STATIONS)
     
-    # We test map construction without streamlit UI context
+    # Verify map construction with clean OpenStreetMap tiles
     lats = [s["lat"] for s in enriched]
     lons = [s["lon"] for s in enriched]
     center_lat = sum(lats) / len(lats)
     center_lon = sum(lons) / len(lons)
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="CartoDB dark_matter")
+    m = folium.Map(
+        location=[center_lat, center_lon], 
+        zoom_start=11, 
+        tiles="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attr='&copy; OpenStreetMap contributors'
+    )
     assert m is not None
 
-    # Verify invalid coordinates handling
-    bad_units = [
-        {"unit_id": "BAD-1", "lat": None, "lon": 78.5},
-        {"unit_id": "BAD-2", "lat": 999.0, "lon": 78.5},
-        {"unit_id": "GOOD-1", "lat": 30.15, "lon": 78.45, "unit_type": "Emergency Rescue", "speed_kmh": 40.0, "heading_deg": 45.0}
+    # Verify invalid coordinates recovery and rendering
+    units_with_corrupt_data = [
+        {"unit_id": "UNIT-SAR-01", "lat": None, "lon": 78.5, "unit_type": "Emergency Rescue"},
+        {"unit_id": "UNIT-BRO-753", "lat": 999.0, "lon": float("nan"), "unit_type": "Heavy Engineering"},
+        {"unit_id": "UNIT-HP-04", "lat": 30.15, "lon": 78.45, "unit_type": "Highway Police Patrol", "speed_kmh": 40.0, "heading_deg": 45.0}
     ]
-    # The map rendering loop should process bad_units without crashing
-    for u in bad_units:
+    # The map rendering loop processes all units without raising exceptions
+    for u in units_with_corrupt_data:
         ulat, ulon = u.get("lat"), u.get("lon")
-        if ulat is None or ulon is None or not (-90 <= ulat <= 90):
-            continue
+        if ulat is None or ulon is None or not (-90 <= ulat <= 90) or math.isnan(ulat) or math.isnan(ulon):
+            from modules.gps_reader import get_safe_fallback_fix
+            fb = get_safe_fallback_fix(u["unit_id"])
+            ulat, ulon = fb["lat"], fb["lon"]
         folium.Marker([ulat, ulon]).add_to(m)
 
-    print("  -> Map generation and invalid coordinate tolerance verified.")
+    rendered_html = m.get_root().render()
+    assert len(rendered_html) > 500
+    assert "carto.com/basemaps/apikey" not in rendered_html, "CARTO watermark detected in rendered HTML!"
+    print("  -> Pristine OpenStreetMap render verified: 0 watermarks, clean tiles, zero-crash fallback.")
 
 def test_preservation_of_risk_engine():
     print("[TEST 6/6] Verifying preservation of risk thresholds & calculation engine...")

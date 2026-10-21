@@ -5,12 +5,11 @@ Page: pages/geographic_map.py
 Purpose: Geospatial GIS Surveillance, Weather Telemetry & Mobile GPS Tracking
 =============================================================================
 Provides:
-- Dark GIS Map with Folium and CartoDB Dark Matter
+- Pristine OpenStreetMap GIS base map (no CARTO token or watermarks)
 - Highway corridor polylines dynamically color-coded by geotechnical risk
 - Fixed geotechnical monitoring nodes (GG-001 to GG-005)
-- Live GPS Mobile Asset Tracking Layer (NDRF QRT, BRO Dozer, Police, EMS, Survey)
-- Live Mountain Weather Ribbon (Open-Meteo API integration)
-- Sector Telemetry Inspection Drawer
+- Live GPS Mobile Asset Tracking Layer (NDRF QRV, BRO Dozer, Police Patrol, EMS, Survey)
+- Real-time GPS metric cards (Speed, Heading, Battery, Last Ping)
 - Resilient Telemetry Table (accessible even if basemap canvas or tiles fail)
 - Hardware GPS Receiver Bridge Interface & Status Diagnostics
 - Temporal Playback Scrubber for historical simulation
@@ -19,11 +18,13 @@ Provides:
 
 import streamlit as st
 import pandas as pd
+from datetime import datetime, timezone
 from modules.map_manager import render_risk_map
 from modules.weather_service import fetch_corridor_weather
 from database.db import get_road_sections, update_response_team
 from modules.ui import render_html
 from modules.gps_reader import GPSHardwareGateway, evaluate_stale_telemetry
+from modules.gps_simulator import DEFAULT_GPS_UNITS
 
 
 def render_geographic_map_page(enriched_stations):
@@ -48,13 +49,41 @@ def render_geographic_map_page(enriched_stations):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 2. Retrieve & Evaluate Mobile GPS Assets
-    gps_units = st.session_state.get("gps_units", [])
-    # Evaluate stale signal threshold (45 seconds)
+    # 2. Retrieve & Safeguard Mobile GPS Assets State
+    if "gps_units" not in st.session_state or not st.session_state.gps_units:
+        st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
+
+    gps_units = st.session_state.gps_units
+    # Evaluate stale signal threshold (45 seconds) without breaking session state
     gps_units = evaluate_stale_telemetry(gps_units, stale_threshold_sec=45.0)
     st.session_state.gps_units = gps_units
 
-    # 3. GIS Map Filter Controls & Layer Toggles
+    # 3. Live GPS Telemetry High-Level Metric Row (Above Map)
+    if gps_units:
+        avg_speed = sum(u.get("speed_kmh", 0.0) for u in gps_units) / max(1, len(gps_units))
+        avg_batt = sum(u.get("battery_pct", 100.0) for u in gps_units) / max(1, len(gps_units))
+        latest_ping_obj = max(
+            (u.get("last_valid_ping", "") for u in gps_units),
+            default="N/A"
+        )
+        ping_display = latest_ping_obj.split("T")[-1][:8] + " UTC" if "T" in str(latest_ping_obj) else "Live Sync"
+        active_dispatches = sum(1 for u in gps_units if u.get("health_status") == "DISPATCHED")
+
+        gm1, gm2, gm3, gm4, gm5 = st.columns(5)
+        with gm1:
+            st.metric("Active GPS Units", f"{len(gps_units)} Mobile Assets", "NH-58 Fleet Tracked")
+        with gm2:
+            st.metric("Mean Ground Speed", f"{avg_speed:.1f} km/h", "Corridor Transit")
+        with gm3:
+            st.metric("Fleet Power Index", f"{avg_batt:.1f}%", "Nominal 24V/12V Bus")
+        with gm4:
+            st.metric("Incident Dispatches", f"{active_dispatches} Dispatched", "Emergency Mobilization" if active_dispatches > 0 else "Standby Ready")
+        with gm5:
+            st.metric("Telemetry Freshness", ping_display, "Zero Lag Stream")
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+
+    # 4. GIS Map Filter Controls & Layer Toggles
     filter_col1, filter_col2, filter_col3 = st.columns([1.5, 1.5, 2])
     with filter_col1:
         risk_filter = st.selectbox(
@@ -72,7 +101,7 @@ def render_geographic_map_page(enriched_stations):
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         active_sim = sum(1 for u in gps_units if u.get("is_simulated", True))
         active_hw = sum(1 for u in gps_units if not u.get("is_simulated", True))
-        st.caption(f"📡 <b>Tracking Fleet:</b> {len(gps_units)} Mobile Units ({active_sim} Simulated, {active_hw} Live Hardware).", unsafe_allow_html=True)
+        st.caption(f"🗺️ <b>Pristine OpenStreetMap Base</b> • {len(gps_units)} Units ({active_sim} Sim, {active_hw} Live Hardware).", unsafe_allow_html=True)
 
     # Filter mobile assets based on user selection
     if asset_type_filter == "ALL ASSETS":
@@ -80,41 +109,24 @@ def render_geographic_map_page(enriched_stations):
     else:
         filtered_gps = [u for u in gps_units if u.get("unit_type") == asset_type_filter]
 
-    # 4. Interactive Folium GIS Map Render (Primary Visualization)
+    # 5. Interactive Folium GIS Map Render (Primary Visualization)
     road_sections_df = get_road_sections()
     render_risk_map(
         enriched_stations,
         road_sections_df=road_sections_df,
         risk_filter=risk_filter,
-        height=540,
+        height=530,
         gps_units=filtered_gps
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 5. Offline-Resilient Mobile Asset Telemetry Roster
+    # 6. Offline-Resilient Mobile Asset Telemetry Roster
     # (Guarantees complete telemetry accessibility even if tile server fails or basemap is unavailable)
     st.markdown("<div class='hud-eyebrow'>MOBILE ASSET TELEMETRY & DISPATCH ROSTER</div>", unsafe_allow_html=True)
     st.markdown("<h3 style='margin-top:0;'>Live Highway Corridor Fleet Surveillance</h3>", unsafe_allow_html=True)
 
     if gps_units:
-        # High-level fleet KPIs
-        avg_speed = sum(u.get("speed_kmh", 0.0) for u in gps_units) / max(1, len(gps_units))
-        avg_batt = sum(u.get("battery_pct", 100.0) for u in gps_units) / max(1, len(gps_units))
-        dispatched_cnt = sum(1 for u in gps_units if u.get("health_status") == "DISPATCHED")
-
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            st.metric("Active Response Fleet", f"{len(gps_units)} Units", "NH-58 Himalayan Sector")
-        with k2:
-            st.metric("Average Corridor Transit Speed", f"{avg_speed:.1f} km/h", "Mountain Transit Flow")
-        with k3:
-            st.metric("Fleet Power / Battery Index", f"{avg_batt:.1f}%", "Nominal Bus Voltage")
-        with k4:
-            st.metric("Emergency Dispatches", f"{dispatched_cnt} Active", "Crisis Mobilization" if dispatched_cnt > 0 else "Nominal Readiness")
-
-        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
-
         # Tabular overview of all mobile assets with full telemetry
         asset_rows = []
         for u in gps_units:
@@ -155,7 +167,7 @@ def render_geographic_map_page(enriched_stations):
 
     st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 16px 0;'>", unsafe_allow_html=True)
 
-    # 6. Sector Telemetry Inspection Drawer (Fixed Monitoring Nodes)
+    # 7. Sector Telemetry Inspection Drawer (Fixed Monitoring Nodes)
     st.markdown("<div class='hud-eyebrow'>SECTOR TELEMETRY INSPECTOR</div>", unsafe_allow_html=True)
     st.markdown("<h3 style='margin-top:0;'>Targeted Sector Node Diagnostics</h3>", unsafe_allow_html=True)
     
@@ -202,7 +214,7 @@ def render_geographic_map_page(enriched_stations):
 
     st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 16px 0;'>", unsafe_allow_html=True)
 
-    # 7. Hardware GPS Receiver Bridge Interface
+    # 8. Hardware GPS Receiver Bridge Interface
     with st.expander("🔌 Real Hardware GPS Receiver Bridge (Serial / NMEA / IoT)", expanded=False):
         st.markdown("""
         **Modular Telemetry Bridge Adapter:**
@@ -255,7 +267,7 @@ def render_geographic_map_page(enriched_stations):
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 8. Temporal Risk Playback & Dispatch Trigger
+    # 9. Temporal Risk Playback & Dispatch Trigger
     p_col1, p_col2 = st.columns([2, 1.5])
     with p_col1:
         st.markdown("### Historical Snapshot Playback")
