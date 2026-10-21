@@ -15,10 +15,11 @@ WHERE THIS CODE IS USED AND WHAT IT DOES:
    - Injects the custom command-center HUD styling via `inject_custom_css()`.
 3. Session State Management:
    - Manages live telemetry states, operating mode (Simulation vs Hardware ESP32),
-     emergency drill flags, and communication gateways.
+     emergency drill flags, communication gateways, and mobile GPS tracking fleet.
 4. Real-time Telemetry Ingestion:
-   - In Simulation Mode: advances synthetic sensor measurements via `generate_telemetry_tick()`.
-   - In Hardware Mode: reads live JSON packets from physical ESP32 via `SerialTelemetryGateway`.
+   - In Simulation Mode: advances synthetic sensor measurements via `generate_telemetry_tick()`
+     and mobile GPS coordinates via `simulate_gps_tick()`.
+   - In Hardware Mode: reads live JSON packets from physical ESP32 and GPS receiver modules.
 5. Risk & Anomaly Assessment:
    - Enriches all stations using `enrich_station_telemetry()` to compute 0-100 risk indices.
    - Automatically logs critical alerts with a 10-minute cooldown to prevent spam.
@@ -26,7 +27,7 @@ WHERE THIS CODE IS USED AND WHAT IT DOES:
    - Provides a streamlined 7-page menu:
      1. Overview Dashboard (System overview, KPIs, and corridor status)
      2. Live Sensor Monitoring (ESP32 stream, threshold vs average, nearby alarms)
-     3. Geographic Risk Map (GIS map with colored highway sectors)
+     3. Geographic Risk Map (GIS map with colored highway sectors & live GPS tracking)
      4. Alert Center (Active incident queue & operator management)
      5. Highway Safety & Road Closures (Roadway conditions & detour advisories)
      6. Reports & Downloads (CSV exports & printable incident dossiers)
@@ -63,6 +64,11 @@ from modules.data_store import (
     get_system_kpis           # Computes active stations, alerts, and system health
 )
 from modules.hardware_reader import SerialTelemetryGateway # PySerial ESP32 gateway
+from modules.gps_simulator import (
+    DEFAULT_GPS_UNITS,  # Default 5 mobile emergency response & patrol units
+    simulate_gps_tick   # Kinematic waypoint advancement along NH-58 corridor
+)
+from modules.gps_reader import GPSHardwareGateway # Modular real GPS telemetry gateway
 
 # ---------------------------------------------------------------------------
 # SECTION 2: Page View Renderers (Streamlined 7 Core Pages)
@@ -70,7 +76,7 @@ from modules.hardware_reader import SerialTelemetryGateway # PySerial ESP32 gate
 # We import only the 7 active operational views requested by the user.
 from pages.overview import render_overview_page             # 1. Overview Dashboard
 from pages.live_sensor import render_live_sensor_page       # 2. Live Sensor Monitoring & ESP32 Alarm
-from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map
+from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map & Live GPS Assets
 from pages.alert_center import render_alert_center_page     # 4. Alert Center & Audit Trail
 from pages.highway_safety import render_highway_safety_page # 5. Highway Safety & Road Closures
 from pages.reports import render_reports_page               # 6. Reports & Data Downloads
@@ -103,6 +109,9 @@ inject_custom_css()
 if 'stations_telemetry' not in st.session_state:
     st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
 
+if 'gps_units' not in st.session_state:
+    st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
+
 if 'emergency' not in st.session_state:
     st.session_state.emergency = False
 
@@ -118,21 +127,33 @@ if 'dispatch_status' not in st.session_state:
 if 'serial_gateway' not in st.session_state:
     st.session_state.serial_gateway = SerialTelemetryGateway()
 
+if 'gps_gateway' not in st.session_state:
+    st.session_state.gps_gateway = GPSHardwareGateway()
+
 if 'auto_tick' not in st.session_state:
     st.session_state.auto_tick = False
 
 # ---------------------------------------------------------------------------
-# SECTION 6: Live Telemetry Ingestion (Simulation or Physical ESP32)
+# SECTION 6: Live Telemetry Ingestion (Simulation or Physical Hardware)
 # ---------------------------------------------------------------------------
-# In Simulation Mode: Updates sensor readings with smooth environmental random walks.
-# In Hardware Mode: Reads incoming newline-delimited JSON packets from USB serial.
+# In Simulation Mode: Updates sensor readings and mobile GPS units with smooth walks.
+# In Hardware Mode: Reads incoming newline-delimited JSON/NMEA packets from USB serial.
 if st.session_state.operating_mode == "SIMULATION":
+    # 1. Advance fixed geotechnical monitoring stations
     st.session_state.stations_telemetry = generate_telemetry_tick(
         st.session_state.stations_telemetry,
         emergency=st.session_state.emergency,
         emergency_target=st.session_state.emergency_target
     )
+    # 2. Advance mobile GPS asset tracking fleet along NH-58 corridor waypoints
+    st.session_state.gps_units = simulate_gps_tick(
+        st.session_state.gps_units,
+        elapsed_sec=3.0,
+        emergency=st.session_state.emergency,
+        emergency_target=st.session_state.emergency_target
+    )
 elif st.session_state.operating_mode == "HARDWARE":
+    # 1. Read geotechnical station packet
     packet = st.session_state.serial_gateway.read_latest_packet()
     if packet:
         stn_id = packet.get("station_id")
@@ -144,6 +165,25 @@ elif st.session_state.operating_mode == "HARDWARE":
                 s["vib"] = packet.get("vibration_detected", s["vib"])
                 s["temp_c"] = packet.get("temperature_c", s.get("temp_c", 15.0))
                 s["is_simulated"] = False
+
+# Check for live GPS hardware packets if hardware gateway is active
+if st.session_state.gps_gateway and st.session_state.gps_gateway.is_connected:
+    gps_packet = st.session_state.gps_gateway.read_latest_packet()
+    if gps_packet:
+        target_u_id = gps_packet.get("unit_id")
+        for u in st.session_state.gps_units:
+            if u["unit_id"] == target_u_id:
+                u["lat"] = gps_packet.get("lat", u["lat"])
+                u["lon"] = gps_packet.get("lon", u["lon"])
+                u["speed_kmh"] = gps_packet.get("speed_kmh", u["speed_kmh"])
+                u["heading_deg"] = gps_packet.get("heading_deg", u["heading_deg"])
+                u["altitude_m"] = gps_packet.get("altitude_m", u.get("altitude_m", 620.0))
+                u["battery_pct"] = gps_packet.get("battery_pct", u.get("battery_pct", 95.0))
+                u["health_status"] = gps_packet.get("health_status", "NOMINAL")
+                u["satellites_in_view"] = gps_packet.get("satellites_in_view", u.get("satellites_in_view", 8))
+                u["last_valid_ping"] = gps_packet.get("last_valid_ping", u["last_valid_ping"])
+                u["data_source"] = "REAL_HARDWARE"
+                u["is_simulated"] = False
 
 # Evaluate real-time risk scores for all stations based on latest telemetry
 enriched_stations = enrich_station_telemetry(st.session_state.stations_telemetry)
@@ -197,6 +237,11 @@ with st.sidebar:
     if st.button("🚨 Trigger Emergency Drill", type="primary", use_container_width=True):
         st.session_state.emergency = True
         st.session_state.emergency_target = "GG-001"
+        # Mobilize emergency QRT units to the drill sector
+        for u in st.session_state.gps_units:
+            if u["unit_id"] in ["UNIT-SAR-01", "UNIT-BRO-753"]:
+                u["health_status"] = "DISPATCHED"
+                u["incident_assignment"] = "CRISIS DISPATCH — Emergency Response to GG-001 Byasi Gorge"
         st.toast("Emergency drill triggered on GG-001 Byasi Pass!", icon="🚨")
         st.rerun()
 
@@ -204,7 +249,8 @@ with st.sidebar:
         st.session_state.emergency = False
         st.session_state.dispatch_status = "Standby — All Sector Rescue Units Nominal"
         st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
-        st.toast("System status reset to nominal baseline.", icon="✅")
+        st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
+        st.toast("System status and mobile GPS units reset to nominal baseline.", icon="✅")
         st.rerun()
 
     st.divider()
@@ -218,6 +264,15 @@ with st.sidebar:
             else ("color: #F59E0B;" if s["risk_level"] == "MODERATE" else "color: #10B981;"))
         )
         st.markdown(f"<div style='font-size: 11px; margin-bottom: 3px;'><span style='{badge_style}'>●</span> <b>{s['id']}</b>: {s['name'][:18]} <span style='float:right; {badge_style}'>{s['risk_score']}</span></div>", unsafe_allow_html=True)
+
+    # Mobile Asset Fleet Quick Status in Sidebar
+    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='hud-eyebrow'>MOBILE ASSET FLEET</div>", unsafe_allow_html=True)
+    dispatched_units = [u for u in st.session_state.gps_units if u.get("health_status") == "DISPATCHED"]
+    if dispatched_units:
+        st.markdown(f"<div style='font-size: 11px; color: #EF4444;'>🚨 <b>{len(dispatched_units)} Unit(s) Dispatched</b></div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div style='font-size: 11px; color: #10B981;'>● <b>{len(st.session_state.gps_units)} Mobile Units</b> Nominal</div>", unsafe_allow_html=True)
 
     st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 12px 0;'>", unsafe_allow_html=True)
     
@@ -257,7 +312,7 @@ elif menu_selection.startswith("2."):
     render_live_sensor_page(enriched_stations)
 
 elif menu_selection.startswith("3."):
-    # Page 3: Full-width Folium GIS map with colored highway corridors and weather ribbon
+    # Page 3: Full-width Folium GIS map with colored highway corridors, weather ribbon & GPS assets
     render_geographic_map_page(enriched_stations)
 
 elif menu_selection.startswith("4."):

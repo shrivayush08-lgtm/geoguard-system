@@ -29,3 +29,5 @@ from modules.weather_service import fetch_corridor_weather
 from modules.ml_inference import predict_landslide_probability
 from modules.hardware_reader import SerialTelemetryGateway
 from modules.report_generator import convert_df_to_csv, generate_incident_report_markdown
+from modules.gps_simulator import DEFAULT_GPS_UNITS, simulate_gps_tick
+from modules.gps_reader import GPSHardwareGateway, parse_nmea_sentence, validate_json_gps_packet, evaluate_stale_telemetry
