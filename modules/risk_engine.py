@@ -279,7 +279,10 @@ def calculate_four_sensor_risk(
     prev_temperature_c: Optional[float] = None,
     soil_raw_adc: Optional[int] = None,
     weights: Optional[Dict[str, float]] = None,
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None,
+    soil_adc: Optional[int] = None,
+    vibration_intensity_g: Optional[float] = None,
+    **kwargs
 ) -> Dict[str, Any]:
     """
     Computes the Composite Landslide Risk Index using the four normalized scores.
@@ -296,6 +299,16 @@ def calculate_four_sensor_risk(
     - CRITICAL: Overall score > 70.0 ("Critical Danger - Emergency response required", RED #EF4444)
     """
     cfg = config or DEFAULT_CONFIG
+
+    # Fallbacks for legacy/alternative argument naming
+    if soil_raw_adc is None:
+        soil_raw_adc = soil_adc if soil_adc is not None else kwargs.get('soil_adc')
+    if vibration_pga is None:
+        vibration_pga = vibration_intensity_g if vibration_intensity_g is not None else kwargs.get('vib_g', 0.0)
+    if tilt_degrees is None and 'tilt' in kwargs:
+        tilt_degrees = kwargs.get('tilt')
+    if temperature_c is None and 'temp_c' in kwargs:
+        temperature_c = kwargs.get('temp_c')
 
     # Configurable sensor weights (equal 25% distribution by default)
     w_soil = weights.get("soil", 0.25) if weights else 0.25
