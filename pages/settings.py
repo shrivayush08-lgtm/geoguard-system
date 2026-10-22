@@ -127,3 +127,54 @@ def render_settings_page():
             conn.execute("VACUUM")
             conn.close()
             st.success("Database vacuumed and optimized.")
+
+    st.markdown("<hr style='border:0; border-top:1px solid #1B2F4C; margin: 20px 0;'>", unsafe_allow_html=True)
+
+    # 4. Microcontroller Firmware Repository
+    st.markdown("### 📟 Microcontroller Firmware (Receiver & Transmitter Codes)")
+    st.caption("Matched NRF24L01 + MPU6050 firmware for wireless geotechnical telemetry:")
+
+    fw_tab1, fw_tab2, fw_tab3 = st.tabs(["📡 ESP32 Receiver Code (COM19)", "🏔️ ESP32 Transmitter Code (Sensors)", "🔌 Pinout & Wiring Table"])
+
+    with fw_tab1:
+        st.markdown("#### GeoGuard ESP32 Receiver Firmware (`GeoGuard_Receiver.ino`)")
+        st.caption("Upload this sketch to the ESP32 connected to the dashboard PC via USB (COM19).")
+        try:
+            with open(r"C:\Users\ayush srivastav\OneDrive\Documents\Arduino\GeoGuard_Receiver\GeoGuard_Receiver.ino", "r") as f:
+                rx_code = f.read()
+        except Exception:
+            rx_code = "// Error reading file from disk"
+        st.code(rx_code, language="cpp")
+        st.download_button("📥 Download GeoGuard_Receiver.ino", rx_code, file_name="GeoGuard_Receiver.ino", mime="text/plain")
+
+    with fw_tab2:
+        st.markdown("#### GeoGuard ESP32 Transmitter Firmware (`GeoGuard_Transmitter.ino`)")
+        st.caption("Upload this sketch to the field station ESP32 with MPU6050, DHT11, Rain, and Soil sensors.")
+        try:
+            with open(r"C:\Users\ayush srivastav\OneDrive\Documents\Arduino\GeoGuard_Transmitter\GeoGuard_Transmitter.ino", "r") as f:
+                tx_code = f.read()
+        except Exception:
+            tx_code = "// Error reading file from disk"
+        st.code(tx_code, language="cpp")
+        st.download_button("📥 Download GeoGuard_Transmitter.ino", tx_code, file_name="GeoGuard_Transmitter.ino", mime="text/plain")
+
+    with fw_tab3:
+        st.markdown("#### Sensor & Transceiver ESP32 Hardware Pin Connections")
+        st.markdown("""
+        | Component | Pin on ESP32 | Protocol / Function | Notes |
+        | :--- | :--- | :--- | :--- |
+        | **NRF24L01 CE** | **GPIO 4** | Chip Enable (Radio Mode) | Set to Pin 4 |
+        | **NRF24L01 CSN** | **GPIO 5** | Chip Select Not (SPI) | Set to Pin 5 |
+        | **NRF24L01 SCK** | **GPIO 18** | SPI Serial Clock | VSPI Default |
+        | **NRF24L01 MISO** | **GPIO 19** | SPI Master In / Slave Out | VSPI Default |
+        | **NRF24L01 MOSI** | **GPIO 23** | SPI Master Out / Slave In | VSPI Default |
+        | **NRF24L01 VCC** | **3.3V Pin** | Power Supply | ⚠️ **Must use 3.3V (5V destroys NRF24)** |
+        | **NRF24L01 GND** | **GND Pin** | Ground | Add 10–100µF capacitor across VCC/GND |
+        | **MPU6050 SDA** | **GPIO 21** | I2C Data Line | 3.3V or 5V VCC |
+        | **MPU6050 SCL** | **GPIO 22** | I2C Clock Line | 3.3V or 5V VCC |
+        | **Rain Sensor Analog** | **GPIO 34** | ADC1 Channel 6 | 0–4095 Analog ADC |
+        | **Soil Moisture Analog** | **GPIO 35** | ADC1 Channel 7 | 0–4095 Analog ADC |
+        | **Vibration Sensor DO** | **GPIO 27** | Digital Input | SW-420 Shock Transducer |
+        | **Buzzer** | **GPIO 26** | Digital Output | Active 5V / 3.3V Buzzer |
+        | **DHT11 Data** | **GPIO 25** | OneWire Protocol | Pull-up 10k resistor |
+        """)

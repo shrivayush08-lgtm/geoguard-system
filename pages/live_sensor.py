@@ -217,6 +217,23 @@ def render_live_sensor_page(enriched_stations):
         
         st.markdown(f"<div style='text-align: right;'>{conn_html}</div>", unsafe_allow_html=True)
 
+    with st.expander("📟 View & Copy Matched ESP32 Firmware (Receiver & Transmitter Codes)", expanded=False):
+        c_tab1, c_tab2 = st.tabs(["📡 ESP32 Receiver Sketch", "🏔️ ESP32 Transmitter Sketch"])
+        with c_tab1:
+            try:
+                with open(r"C:\Users\ayush srivastav\OneDrive\Documents\Arduino\GeoGuard_Receiver\GeoGuard_Receiver.ino", "r") as f:
+                    c_rx = f.read()
+            except Exception:
+                c_rx = "// Could not read GeoGuard_Receiver.ino"
+            st.code(c_rx, language="cpp")
+        with c_tab2:
+            try:
+                with open(r"C:\Users\ayush srivastav\OneDrive\Documents\Arduino\GeoGuard_Transmitter\GeoGuard_Transmitter.ino", "r") as f:
+                    c_tx = f.read()
+            except Exception:
+                c_tx = "// Could not read GeoGuard_Transmitter.ino"
+            st.code(c_tx, language="cpp")
+
     # Locate current station record from existing station-selection logic
     if not enriched_stations:
         st.warning("⚠️ No station telemetry records available.")
