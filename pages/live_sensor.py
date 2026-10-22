@@ -30,6 +30,7 @@ WHERE THIS CODE IS USED:
 import streamlit as st
 import pandas as pd
 import numpy as np
+import math
 from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 
@@ -73,16 +74,49 @@ def _hex_to_rgb(hex_code):
     return "56, 189, 248"
 
 
+def _safe_float(val, default=None):
+    """Safely converts a value to float, rejecting NaN, Inf, empty strings, and non-numeric values."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        if math.isnan(val) or math.isinf(val):
+            return default
+        return float(val)
+    if isinstance(val, str):
+        val = val.strip()
+        if not val or val.upper() in ("NONE", "NULL", "NAN", "INF", "-INF", "N/A", "UNDEFINED"):
+            return default
+        try:
+            f = float(val)
+            if math.isnan(f) or math.isinf(f):
+                return default
+            return f
+        except (ValueError, TypeError):
+            return default
+    try:
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
 def render_sparkline_chart(values, color_hex="#38BDF8", height=52):
     """Generates a compact, minimalist Plotly sparkline without axis clutter."""
-    if not values or len(values) == 0:
-        values = [0.0] * 10
-    elif len(values) < 5:
-        values = list(values) + [values[-1]] * (5 - len(values))
+    clean_vals = []
+    if values:
+        for v in values:
+            fv = _safe_float(v, 0.0)
+            clean_vals.append(fv if fv is not None else 0.0)
+    if not clean_vals:
+        clean_vals = [0.0] * 5
+    elif len(clean_vals) < 5:
+        clean_vals = list(clean_vals) + [clean_vals[-1]] * (5 - len(clean_vals))
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        y=values,
+        y=clean_vals,
         mode="lines",
         line=dict(color=color_hex, width=2.0),
         fill="tozeroy",
@@ -183,36 +217,51 @@ def render_live_sensor_page(enriched_stations):
         
         st.markdown(f"<div style='text-align: right;'>{conn_html}</div>", unsafe_allow_html=True)
 
-    # Locate current station record
-    current_stn = next((s for s in enriched_stations if s["id"] == selected_id), enriched_stations[0])
+    # Locate current station record from existing station-selection logic
+    if not enriched_stations:
+        st.warning("⚠️ No station telemetry records available.")
+        return
+
+    current_stn = next((s for s in enriched_stations if isinstance(s, dict) and s.get("id") == selected_id), enriched_stations[0])
+    if not isinstance(current_stn, dict):
+        current_stn = {}
+
     last_update_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
     # Fetch historical readings for charts
     hist_df = get_filtered_history(station_id=selected_id, time_range=time_window)
+    if hist_df is None:
+        hist_df = pd.DataFrame()
 
-    # Telemetry values
-    soil_pct = float(current_stn.get("soil_moisture_pct", 42.0))
-    soil_adc = int(current_stn.get("soil_adc", 2150))
-    temp_c = float(current_stn.get("temp_c", current_stn.get("temperature_c", 14.5)))
-    tilt_deg = float(current_stn.get("tilt", 0.35))
-    tilt_rate = float(current_stn.get("tilt_rate", 0.0))
+    # Telemetry values with safe numeric conversion
+    soil_pct = _safe_float(current_stn.get("soil_moisture_pct"), 42.0)
+    soil_adc = int(_safe_float(current_stn.get("soil_adc"), 2150))
+    temp_c = _safe_float(current_stn.get("temp_c", current_stn.get("temperature_c")), 14.5)
+    tilt_deg = _safe_float(current_stn.get("tilt"), 0.35)
+    tilt_rate = _safe_float(current_stn.get("tilt_rate"), 0.0)
     vib_detected = bool(current_stn.get("vib", False))
-    vib_g = float(current_stn.get("vib_g", 0.04))
-    batt = current_stn.get("battery", 98.2)
+    vib_g = _safe_float(current_stn.get("vib_g"), 0.04)
+    batt = _safe_float(current_stn.get("battery"), 98.2)
 
     # -------------------------------------------------------------------------
     # 3. Node Telemetry Header Strip
     # -------------------------------------------------------------------------
+    stn_id = current_stn.get('id', 'GG-001')
+    stn_name = current_stn.get('name', 'Himalayan Pass')
+    stn_corridor = current_stn.get('corridor', 'NH-58')
+    stn_lat = _safe_float(current_stn.get('lat'), 30.1234)
+    stn_lon = _safe_float(current_stn.get('lon'), 78.4321)
+
     render_html(f"""
     <div style='background: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 12px 18px; margin: 10px 0 16px 0; display: flex; justify-content: space-between; align-items: center;'>
         <div style='display: flex; gap: 20px; align-items: center;'>
             <div>
-                <span style='font-size: 13px; color: #38BDF8; font-weight: 700;'>STATION {current_stn['id']}</span>
-                <span style='font-size: 12px; color: #94A3B8; margin-left: 8px;'>{current_stn.get('name', 'Himalayan Pass')}</span>
+                <span style='font-size: 13px; color: #38BDF8; font-weight: 700;'>STATION {stn_id}</span>
+                <span style='font-size: 12px; color: #94A3B8; margin-left: 8px;'>{stn_name}</span>
             </div>
             <div style='display: flex; gap: 14px; font-family: "JetBrains Mono", monospace; font-size: 11px; color: #94A3B8;'>
-                <span>Corridor: <b style='color:#F8FAFC;'>{current_stn.get('corridor', 'NH-58')}</b></span>
-                <span>Coordinates: <b style='color:#F8FAFC;'>{current_stn['lat']:.4f}°N, {current_stn['lon']:.4f}°E</b></span>
+                <span>Corridor: <b style='color:#F8FAFC;'>{stn_corridor}</b></span>
+                <span>Coordinates: <b style='color:#F8FAFC;'>{stn_lat:.4f}°N, {stn_lon:.4f}°E</b></span>
                 <span>Last Updated: <b style='color:#10B981;'>{last_update_ts}</b></span>
             </div>
         </div>
@@ -227,9 +276,15 @@ def render_live_sensor_page(enriched_stations):
     # -------------------------------------------------------------------------
     # 4. Automatic Landslide Risk Assessment
     # -------------------------------------------------------------------------
-    raw_rain_obj = current_stn.get("rain_intensity", current_stn.get("rainfall_intensity_mmh"))
-    rain_mmh = float(raw_rain_obj) if raw_rain_obj is not None else None
-    rain_mmh_val = float(rain_mmh) if rain_mmh is not None else 0.0
+    # Safely retrieve rain_intensity, falling back to rainfall_intensity_mmh
+    raw_rain_obj = current_stn.get("rain_intensity")
+    if raw_rain_obj is None or (isinstance(raw_rain_obj, str) and raw_rain_obj.strip() == ""):
+        raw_rain_obj = current_stn.get("rainfall_intensity_mmh")
+
+    parsed_rain = _safe_float(raw_rain_obj, None)
+    # Physically impossible or negative rainfall rejected to None
+    rain_mmh = parsed_rain if (parsed_rain is not None and parsed_rain >= 0.0) else None
+    rain_mmh_val = rain_mmh if rain_mmh is not None else 0.0
 
     risk_res = calculate_five_sensor_risk(
         soil_moisture_pct=soil_pct,
@@ -300,21 +355,27 @@ def render_live_sensor_page(enriched_stations):
         """)
 
     # -------------------------------------------------------------------------
-    # 7. Four Live Sensor Dashboard Cards (with Real-Time Sparklines)
+    # 7. Five Live Sensor Dashboard Cards (with Real-Time Sparklines)
     # -------------------------------------------------------------------------
     st.markdown("<div class='hud-eyebrow'>PRIMARY GEOTECHNICAL TRANSDUCERS</div>", unsafe_allow_html=True)
     st.markdown("<h3 style='margin-top:0;'>Telemetry Channels & Trend Sparklines</h3>", unsafe_allow_html=True)
 
     if not hist_df.empty:
-        spark_soil = hist_df["soil_moisture_pct"].tail(20).tolist()
-        r_hist_col = "rainfall_intensity_mmh" if "rainfall_intensity_mmh" in hist_df.columns else "rain_intensity"
-        spark_rain = hist_df[r_hist_col].tail(20).tolist() if r_hist_col in hist_df.columns else [rain_mmh_val] * 15
-        spark_tilt = hist_df["tilt_degrees"].tail(20).tolist()
-        spark_vib = hist_df["vibration_intensity_g"].tail(20).tolist()
-        spark_temp = hist_df["temperature_c"].tail(20).tolist() if "temperature_c" in hist_df.columns else [temp_c] * 15
+        spark_soil = [_safe_float(v, soil_pct) for v in hist_df["soil_moisture_pct"].tail(20).tolist()] if "soil_moisture_pct" in hist_df.columns else [soil_pct] * 10
+        r_hist_col = "rainfall_intensity_mmh" if "rainfall_intensity_mmh" in hist_df.columns else ("rain_intensity" if "rain_intensity" in hist_df.columns else None)
+        if r_hist_col and not hist_df[r_hist_col].dropna().empty:
+            spark_rain = [_safe_float(v, 0.0) for v in hist_df[r_hist_col].tail(20).tolist()]
+        elif rain_mmh is not None:
+            spark_rain = [rain_mmh] * 10
+        else:
+            spark_rain = [0.0] * 5
+
+        spark_tilt = [_safe_float(v, tilt_deg) for v in hist_df["tilt_degrees"].tail(20).tolist()] if "tilt_degrees" in hist_df.columns else [tilt_deg] * 10
+        spark_vib = [_safe_float(v, vib_g) for v in hist_df["vibration_intensity_g"].tail(20).tolist()] if "vibration_intensity_g" in hist_df.columns else [vib_g] * 10
+        spark_temp = [_safe_float(v, temp_c) for v in hist_df["temperature_c"].tail(20).tolist()] if "temperature_c" in hist_df.columns else [temp_c] * 10
     else:
         spark_soil = [soil_pct] * 10
-        spark_rain = [rain_mmh_val] * 10
+        spark_rain = [rain_mmh] * 10 if rain_mmh is not None else [0.0] * 5
         spark_tilt = [tilt_deg] * 10
         spark_vib = [vib_g] * 10
         spark_temp = [temp_c] * 10
@@ -383,7 +444,7 @@ def render_live_sensor_page(enriched_stations):
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
                 <span>Rain Risk Factor:</span>
-                <b style='color: {r_color};'>{rain_risk:.1f} / 100</b>
+                <b style='color: {r_color};'>{f"{rain_risk:.1f} / 100" if is_rain_avail else "UNAVAILABLE"}</b>
             </div>
             """)
 
@@ -511,10 +572,15 @@ def render_live_sensor_page(enriched_stations):
         w_temp = weights_dict.get("temperature", 0.10)
 
         c_soil = soil_risk * w_soil
-        c_rain = rain_risk * w_rain
+        c_rain = (rain_risk * w_rain) if is_rain_avail else 0.0
         c_slope = slope_risk * w_slope
         c_vib = vib_risk * w_vib
         c_temp = temp_risk * w_temp
+
+        rain_label = f"{rain_mmh:.1f} mm/h" if is_rain_avail else "N/A - UNAVAILABLE"
+        rain_score_display = f"{rain_risk:.1f}/100" if is_rain_avail else "UNAVAILABLE"
+        rain_pts_display = f"+{c_rain:.1f} pts" if is_rain_avail else "+0.0 pts (missing)"
+        rain_bar_width = rain_risk if is_rain_avail else 0.0
 
         render_html(f"""
         <div style='background: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 14px 18px;'>
@@ -534,11 +600,11 @@ def render_live_sensor_page(enriched_stations):
                 </div>
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
-                        <span>🌧️ Rain Intensity ({f"{rain_mmh:.1f} mm/h" if rain_mmh is not None else "UNAVAILABLE"}):</span>
-                        <b>{rain_risk:.1f}/100 | W: {w_rain*100:.0f}% | +{c_rain:.1f} pts</b>
+                        <span>🌧️ Rain Intensity ({rain_label}):</span>
+                        <b>{rain_score_display} | W: {w_rain*100:.0f}% | {rain_pts_display}</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
-                        <div style='background: #0284C7; width: {rain_risk}%; height: 100%;'></div>
+                        <div style='background: #0284C7; width: {rain_bar_width}%; height: 100%;'></div>
                     </div>
                 </div>
                 <div>
@@ -747,15 +813,23 @@ def render_live_sensor_page(enriched_stations):
         with chart_r1_c2:
             st.markdown("#### 2. Rain Intensity vs Time (mm/hr)")
             fig_rain = go.Figure()
-            r_col = "rainfall_intensity_mmh" if "rainfall_intensity_mmh" in hist_df.columns else "rain_intensity"
+            r_col = "rainfall_intensity_mmh" if "rainfall_intensity_mmh" in hist_df.columns else ("rain_intensity" if "rain_intensity" in hist_df.columns else None)
+            if r_col and not hist_df[r_col].dropna().empty:
+                rain_plot_y = [_safe_float(v, None) for v in hist_df[r_col]]
+            elif rain_mmh is not None:
+                rain_plot_y = [rain_mmh] * len(hist_df)
+            else:
+                rain_plot_y = [None] * len(hist_df)
+
             fig_rain.add_trace(go.Scatter(
                 x=hist_df["datetime"],
-                y=hist_df[r_col] if r_col in hist_df.columns else [rain_mmh_val]*len(hist_df),
+                y=rain_plot_y,
                 name="Rain Intensity (mm/hr)",
                 line=dict(color="#0284C7", width=2.0),
                 fill="tozeroy",
                 fillcolor="rgba(2, 132, 199, 0.08)",
-                mode="lines"
+                mode="lines",
+                connectgaps=False
             ))
             fig_rain.add_hline(y=25.0, line_dash="dash", line_color="#F59E0B", annotation_text="Elevated Rain (25 mm/h)", annotation_font_color="#F59E0B")
             fig_rain.add_hline(y=50.0, line_dash="dash", line_color="#EF4444", annotation_text="Critical Cloudburst (50 mm/h)", annotation_font_color="#EF4444")
@@ -818,12 +892,13 @@ def render_live_sensor_page(enriched_stations):
         # Compute composite risk trace across historical dataframe
         risk_hist = []
         for _, row in hist_df.iterrows():
+            r_hist_val = _safe_float(row.get("rainfall_intensity_mmh", row.get("rain_intensity")), None)
             r = calculate_five_sensor_risk(
-                soil_moisture_pct=row.get("soil_moisture_pct", 30.0),
-                rain_intensity_mmh=row.get("rainfall_intensity_mmh", 0.0),
-                temperature_c=row.get("temperature_c", 14.5),
-                tilt_degrees=row.get("tilt_degrees", 0.3),
-                vibration_pga=row.get("vibration_intensity_g", 0.02)
+                soil_moisture_pct=_safe_float(row.get("soil_moisture_pct"), 30.0),
+                rain_intensity_mmh=r_hist_val,
+                temperature_c=_safe_float(row.get("temperature_c"), 14.5),
+                tilt_degrees=_safe_float(row.get("tilt_degrees"), 0.3),
+                vibration_pga=_safe_float(row.get("vibration_intensity_g"), 0.02)
             )
             risk_hist.append(r["overall_risk_score"])
 
