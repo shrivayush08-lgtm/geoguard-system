@@ -228,8 +228,8 @@ class SerialTelemetryGateway:
             m = re.search(r"[-+]?\d*\.?\d+", line)
             if m: self._kv_buffer["accel"] = float(m.group())
             return None
-        elif "status:" in line_lower or "-----" in line:
-            if "soil" in self._kv_buffer and ("accel" in self._kv_buffer or "vib" in self._kv_buffer or "tilt" in self._kv_buffer):
+        elif any(k in line_lower for k in ["status:", "landslide:", "transmission:", "---"]):
+            if ("soil" in self._kv_buffer or "tilt" in self._kv_buffer or "vib" in self._kv_buffer or "temp" in self._kv_buffer):
                 raw_soil = float(self._kv_buffer.get("soil", 1500.0))
                 raw_rain_adc = self._kv_buffer.get("rain", 0.0)
                 # Map raw rain ADC (ESP32) or rate to mm/hr
@@ -380,8 +380,10 @@ class SerialTelemetryGateway:
                 lines_read += 1
                 if not raw_line:
                     continue
+                print(f"[SERIAL RAW] {raw_line}", flush=True)
                 parsed = self.validate_and_parse_line(raw_line)
                 if parsed:
+                    print(f"[SERIAL PARSED] {parsed}", flush=True)
                     latest_parsed = parsed
                     self.last_reading = parsed
                     self.last_packet_time = datetime.now(timezone.utc)

@@ -175,6 +175,7 @@ elif st.session_state.operating_mode == "HARDWARE":
                     s["temp_c"] = packet.get("temperature_c", s.get("temp_c", 15.0))
                     s["temperature_c"] = s["temp_c"]
                     s["tilt"] = packet.get("tilt_degrees", s.get("tilt", 0.3))
+                    s["tilt_degrees"] = s["tilt"]
                     s["vib"] = (packet.get("vibration_pga", 0.0) > 0.15)
                     s["vib_g"] = packet.get("vibration_pga", s.get("vib_g", 0.02))
                     s["rainfall_intensity_mmh"] = packet.get("rain_intensity_mmh")
@@ -182,6 +183,27 @@ elif st.session_state.operating_mode == "HARDWARE":
                     s["is_simulated"] = False
                     s["is_valid"] = packet.get("is_valid", True)
                     s["timestamp"] = packet.get("timestamp", datetime.now(timezone.utc).isoformat())
+
+            # Persist incoming real hardware packet into SQLite history
+            try:
+                log_telemetry({
+                    "timestamp": packet.get("timestamp", datetime.utcnow().isoformat()),
+                    "station_id": stn_id,
+                    "soil_adc": packet.get("soil_adc"),
+                    "soil_moisture_pct": packet.get("soil_moisture_pct"),
+                    "temperature_c": packet.get("temperature_c"),
+                    "rain_adc": None,
+                    "rainfall_intensity_mmh": packet.get("rain_intensity_mmh"),
+                    "rain_acc_24h_mm": 0.0,
+                    "tilt_degrees": packet.get("tilt_degrees"),
+                    "tilt_rate_deg_h": 0.0,
+                    "vibration_detected": 1 if (packet.get("vibration_pga", 0.0) > 0.15) else 0,
+                    "vibration_intensity_g": packet.get("vibration_pga", 0.02),
+                    "battery_pct": 99.0,
+                    "is_simulated": 0
+                })
+            except Exception:
+                pass
 
     # 2. Read live GPS hardware packets if GPS gateway is active
     if st.session_state.gps_gateway and st.session_state.gps_gateway.is_connected:
