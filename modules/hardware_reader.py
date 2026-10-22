@@ -204,7 +204,7 @@ class SerialTelemetryGateway:
 
         # Format 2: Arduino Key-Value stream (from slope / receiver debug prints)
         line_lower = line.lower()
-        if "soil moisture:" in line_lower:
+        if "soil moisture:" in line_lower or "soil:" in line_lower:
             m = re.search(r"[-+]?\d*\.?\d+", line)
             if m: self._kv_buffer["soil"] = float(m.group())
             return None

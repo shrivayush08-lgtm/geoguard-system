@@ -359,8 +359,9 @@ with st.sidebar:
         gw = st.session_state.serial_gateway
         avail_ports = gw.list_available_ports()
         port_choices = avail_ports if avail_ports else ["COM3", "COM4", "/dev/ttyUSB0"]
+        default_port_idx = port_choices.index("COM19") if "COM19" in port_choices else 0
 
-        selected_port = st.selectbox("Serial Port", port_choices, index=0)
+        selected_port = st.selectbox("Serial Port", port_choices, index=default_port_idx)
         selected_baud = st.selectbox("Baud Rate", [9600, 19200, 38400, 57600, 115200], index=4)
 
         if not gw.is_connected:
