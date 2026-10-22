@@ -426,6 +426,10 @@ render_disclaimer()
 # ---------------------------------------------------------------------------
 # SECTION 11: Controlled Telemetry Auto-Stream Loop
 # ---------------------------------------------------------------------------
-if st.session_state.auto_tick:
+# In HARDWARE mode with active connection, auto-refresh every 1.2s to stream live sensor readings
+if st.session_state.operating_mode == "HARDWARE" and gw.is_connected:
+    time.sleep(1.2)
+    st.rerun()
+elif st.session_state.auto_tick:
     time.sleep(3)
     st.rerun()

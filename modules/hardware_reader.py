@@ -68,8 +68,8 @@ class SerialTelemetryGateway:
 
         # Configurable ADC calibration parameters (for ESP32 12-bit capacitive sensor)
         self.raw_adc_mode: bool = False
-        self.adc_dry_baseline: int = 1100
-        self.adc_wet_baseline: int = 3700
+        self.adc_dry_baseline: int = 3500
+        self.adc_wet_baseline: int = 1200
         self._kv_buffer: Dict[str, Any] = {}
 
     @staticmethod
@@ -131,8 +131,12 @@ class SerialTelemetryGateway:
 
         # If reading is in ADC range (e.g. 500 - 4095), convert to % VWC
         if self.raw_adc_mode or raw_soil > 100.0:
-            span = max(1.0, float(self.adc_wet_baseline - self.adc_dry_baseline))
-            pct = ((raw_soil - self.adc_dry_baseline) / span) * 100.0
+            dry = float(self.adc_dry_baseline)
+            wet = float(self.adc_wet_baseline)
+            if dry > wet:
+                pct = ((dry - raw_soil) / max(1.0, dry - wet)) * 100.0
+            else:
+                pct = ((raw_soil - dry) / max(1.0, wet - dry)) * 100.0
             calibrated_soil = max(0.0, min(100.0, pct))
 
         return (
@@ -300,10 +304,16 @@ class SerialTelemetryGateway:
             return None
 
         try:
-            if self.serial_conn.in_waiting > 0:
+            latest_parsed = None
+            lines_read = 0
+            while self.serial_conn and self.serial_conn.in_waiting > 0 and lines_read < 100:
                 raw_line = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
+                lines_read += 1
+                if not raw_line:
+                    continue
                 parsed = self.validate_and_parse_line(raw_line)
                 if parsed:
+                    latest_parsed = parsed
                     self.last_reading = parsed
                     self.last_packet_time = datetime.now(timezone.utc)
                     self.total_packets_received += 1
@@ -312,7 +322,7 @@ class SerialTelemetryGateway:
                         f"Soil={parsed['soil_moisture_pct']}%, Temp={parsed['temperature_c']}°C, "
                         f"Tilt={parsed['tilt_degrees']}°, Vib={parsed['vibration_pga']}g"
                     )
-                    return parsed
+            return latest_parsed
         except Exception as e:
             self.status_message = f"Serial I/O error: {str(e)}"
             self.disconnect()
