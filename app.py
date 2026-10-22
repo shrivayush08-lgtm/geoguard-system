@@ -163,13 +163,15 @@ elif st.session_state.operating_mode == "HARDWARE":
             for s in st.session_state.stations_telemetry:
                 if s["id"] == stn_id:
                     s["soil_moisture_pct"] = packet.get("soil_moisture_pct", s.get("soil_moisture_pct", 35.0))
-                    if "soil_adc" in packet:
+                    if "soil_adc" in packet and packet["soil_adc"] is not None:
                         s["soil_adc"] = packet["soil_adc"]
                     s["temp_c"] = packet.get("temperature_c", s.get("temp_c", 15.0))
                     s["temperature_c"] = s["temp_c"]
                     s["tilt"] = packet.get("tilt_degrees", s.get("tilt", 0.3))
                     s["vib"] = (packet.get("vibration_pga", 0.0) > 0.15)
                     s["vib_g"] = packet.get("vibration_pga", s.get("vib_g", 0.02))
+                    s["rainfall_intensity_mmh"] = packet.get("rain_intensity_mmh")
+                    s["rain_intensity"] = s["rainfall_intensity_mmh"]
                     s["is_simulated"] = False
                     s["is_valid"] = packet.get("is_valid", True)
                     s["timestamp"] = packet.get("timestamp", datetime.now(timezone.utc).isoformat())
@@ -259,6 +261,8 @@ with st.sidebar:
                     s["tilt_rate"] = 0.50
                     s["vib"] = True
                     s["vib_g"] = 0.42
+                    s["rainfall_intensity_mmh"] = 42.0
+                    s["rain_intensity"] = 42.0
             st.toast("ESP32 acute telemetry surge injected into GG-001!", icon="⚡")
             st.rerun()
 
@@ -273,6 +277,8 @@ with st.sidebar:
                     s["tilt_rate"] = 0.01
                     s["vib"] = False
                     s["vib_g"] = 0.02
+                    s["rainfall_intensity_mmh"] = 1.5
+                    s["rain_intensity"] = 1.5
             st.session_state.emergency = False
             st.session_state.interlock_system.reset_interlock()
             st.toast("Low Risk Scenario set on GG-001 (Score < 40)", icon="🟢")
@@ -289,8 +295,23 @@ with st.sidebar:
                     s["tilt_rate"] = 0.05
                     s["vib"] = False
                     s["vib_g"] = 0.16
+                    s["rainfall_intensity_mmh"] = 26.5
+                    s["rain_intensity"] = 26.5
             st.session_state.emergency = False
             st.toast("Moderate Risk Scenario set on GG-001 (40 <= Score <= 70)", icon="🟡")
+            st.rerun()
+
+        # 3b. Test Heavy Rain Event (Isolated 25% Rain Factor Test)
+        if st.button("🌧️ Test Heavy Rain (45 mm/h)", use_container_width=True, help="Injects an isolated extreme precipitation event into GG-001"):
+            for s in st.session_state.stations_telemetry:
+                if s["id"] == "GG-001":
+                    s["rainfall_intensity_mmh"] = 45.0
+                    s["rain_intensity"] = 45.0
+                    s["soil_moisture_pct"] = 62.0
+                    s["temp_c"] = 14.0
+                    s["tilt"] = 0.60
+                    s["vib_g"] = 0.05
+            st.toast("Heavy Rain Event (45 mm/h) injected into GG-001!", icon="🌧️")
             st.rerun()
 
         # 4. Test Critical Risk Button (> 70.0)
@@ -304,6 +325,8 @@ with st.sidebar:
                     s["tilt_rate"] = 0.45
                     s["vib"] = True
                     s["vib_g"] = 0.45
+                    s["rainfall_intensity_mmh"] = 48.5
+                    s["rain_intensity"] = 48.5
             st.session_state.emergency = True
             st.session_state.emergency_target = "GG-001"
             # Mobilize emergency QRT units

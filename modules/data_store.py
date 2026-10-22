@@ -55,11 +55,13 @@ def enrich_station_telemetry(raw_stations_list):
     enriched = []
     for stn in raw_stations_list:
         temp_val = stn.get("temp_c", stn.get("temperature_c", 15.0))
+        rain_val = stn.get("rain_intensity", stn.get("rainfall_intensity_mmh"))
         res = calculate_risk(
             soil_adc=stn.get("soil_adc"),
             soil_moisture_pct=stn.get("soil_moisture_pct"),
             rain_adc=stn.get("rain_adc"),
-            rainfall_intensity_mmh=stn.get("rainfall_intensity_mmh"),
+            rainfall_intensity_mmh=rain_val,
+            rain_intensity_mmh=rain_val,
             rain_acc_24h_mm=stn.get("acc_rain", 0.0),
             tilt_degrees=stn.get("tilt"),
             tilt_rate_deg_h=stn.get("tilt_rate", 0.0),
@@ -71,11 +73,16 @@ def enrich_station_telemetry(raw_stations_list):
         item = dict(stn)
         item["temp_c"] = temp_val
         item["temperature_c"] = temp_val
+        item["rain_intensity"] = rain_val
+        item["rainfall_intensity_mmh"] = rain_val
         item["risk_score"] = res["risk_score"]
         item["risk_level"] = res["risk_level"]
         item["status_color"] = res["status_color"]
         item["factors"] = res["factors"]
         item["breakdown"] = res["breakdown"]
+        item["sensor_scores"] = res.get("sensor_scores", res["breakdown"])
+        item["contributions"] = res.get("contributions", {})
+        item["weights"] = res.get("weights", {})
         item["recommended_action"] = res["recommended_action"]
         item["data_quality"] = res["data_quality"]
         item["status"] = "ONLINE"

@@ -49,7 +49,7 @@ def render_risk_intelligence_page(enriched_stations):
             current_stn["status_color"],
             height=300
         )
-        st.plotly_chart(gauge_fig, use_container_width=True)
+        st.plotly_chart(gauge_fig, use_container_width=True, key="risk_gauge_fig")
 
         st.markdown(f"""
         <div style='background: rgba(13, 24, 41, 0.9); border: 1px solid #1B2F4C; border-radius: 8px; padding: 12px; text-align: center;'>
@@ -66,7 +66,7 @@ def render_risk_intelligence_page(enriched_stations):
         # Build 5-axis geotechnical radar chart
         breakdown = current_stn.get("breakdown", {})
         soil_p = current_stn.get("soil_moisture_pct", 40.0)
-        rain_i = min(100.0, current_stn.get("rainfall_intensity_mmh", 5.0) * 2.5)
+        rain_i = min(100.0, current_stn.get("rainfall_intensity_mmh", current_stn.get("rain_intensity", 5.0)) * 2.0)
         acc_r = min(100.0, current_stn.get("acc_rain", 10.0) * 0.8)
         tilt_p = min(100.0, current_stn.get("tilt", 0.35) * 35.0)
         vib_p = 90.0 if current_stn.get("vib") else 15.0
@@ -116,7 +116,7 @@ def render_risk_intelligence_page(enriched_stations):
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5, font=dict(color="#8B9BB4", size=10))
         )
-        st.plotly_chart(fig_radar, use_container_width=True)
+        st.plotly_chart(fig_radar, use_container_width=True, key="risk_radar_fig")
 
     st.markdown("<hr style='border:0; border-top:1px solid #1B2F4C; margin: 18px 0;'>", unsafe_allow_html=True)
 
@@ -124,12 +124,24 @@ def render_risk_intelligence_page(enriched_stations):
     f_col1, f_col2 = st.columns([1.5, 1.5])
 
     with f_col1:
-        st.markdown("### Factor Score Contributions")
+        st.markdown("### Factor Score Contributions (5-Sensor Model)")
+        contribs = current_stn.get("contributions", {})
+        if not contribs:
+            s_scores = current_stn.get("breakdown", {})
+            contribs = {
+                "soil": round(s_scores.get("soil", 0.0) * 0.25, 2),
+                "rain": round(s_scores.get("rain", 0.0) * 0.25, 2),
+                "slope": round(s_scores.get("slope", 0.0) * 0.25, 2),
+                "vibration": round(s_scores.get("vibration", 0.0) * 0.15, 2),
+                "temperature": round(s_scores.get("temperature", s_scores.get("temp", 0.0)) * 0.10, 2)
+            }
+
         breakdown_df = pd.DataFrame([
-            {"Parameter": "Pore Saturation", "Points": breakdown.get("soil", 0.0), "Max": 30.0, "Color": "#00F0FF"},
-            {"Parameter": "Slope Displacement", "Points": breakdown.get("tilt", 0.0), "Max": 30.0, "Color": "#FF7A00"},
-            {"Parameter": "Precipitation Rate", "Points": breakdown.get("rain", 0.0), "Max": 25.0, "Color": "#00E5A3"},
-            {"Parameter": "Seismic Tremor", "Points": breakdown.get("vibration", 0.0), "Max": 15.0, "Color": "#FF2A4D"},
+            {"Parameter": "Pore Saturation (25%)", "Points": contribs.get("soil", 0.0), "Max": 25.0, "Color": "#00F0FF"},
+            {"Parameter": "Rain Intensity (25%)", "Points": contribs.get("rain", 0.0), "Max": 25.0, "Color": "#38BDF8"},
+            {"Parameter": "Slope Displacement (25%)", "Points": contribs.get("slope", 0.0), "Max": 25.0, "Color": "#FF7A00"},
+            {"Parameter": "Seismic Tremor (15%)", "Points": contribs.get("vibration", 0.0), "Max": 15.0, "Color": "#FF2A4D"},
+            {"Parameter": "Thermal Dynamics (10%)", "Points": contribs.get("temperature", 0.0), "Max": 10.0, "Color": "#A78BFA"},
         ])
 
         fig_bar = px.bar(
@@ -139,10 +151,11 @@ def render_risk_intelligence_page(enriched_stations):
             orientation="h",
             color="Parameter",
             color_discrete_map={
-                "Pore Saturation": "#00F0FF",
-                "Slope Displacement": "#FF7A00",
-                "Precipitation Rate": "#00E5A3",
-                "Seismic Tremor": "#FF2A4D"
+                "Pore Saturation (25%)": "#00F0FF",
+                "Rain Intensity (25%)": "#38BDF8",
+                "Slope Displacement (25%)": "#FF7A00",
+                "Seismic Tremor (15%)": "#FF2A4D",
+                "Thermal Dynamics (10%)": "#A78BFA"
             },
             text="Points"
         )
@@ -150,9 +163,9 @@ def render_risk_intelligence_page(enriched_stations):
         plotly_theme = get_plotly_theme()
         fig_bar.update_layout(
             **plotly_theme,
-            height=200,
+            height=240,
             showlegend=False,
-            xaxis=dict(range=[0, 35], title="Score Contribution (Points)", gridcolor="#1B2F4C"),
+            xaxis=dict(range=[0, 30], title="Contribution (Points out of 100)", gridcolor="#1B2F4C"),
             yaxis=dict(title="", showgrid=False)
         )
         fig_bar.update_traces(
@@ -160,7 +173,7 @@ def render_risk_intelligence_page(enriched_stations):
             textposition='outside',
             textfont=dict(color="#F0F6FC", family="Space Grotesk")
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, use_container_width=True, key="risk_bar_fig")
 
     with f_col2:
         st.markdown("### Factor Diagnostic Observations")
@@ -168,6 +181,23 @@ def render_risk_intelligence_page(enriched_stations):
         <div style='background: rgba(13, 24, 41, 0.9); border: 1px solid #1B2F4C; border-radius: 8px; padding: 16px;'>
             <div class='hud-eyebrow'>REAL-TIME GEOTECHNICAL TELEMETRY FACTORS:</div>
             <div style='margin-top: 8px;'>
+                <span style='color: #00F0FF;'>● Soil Moisture:</span> {current_stn.get('soil_moisture_pct', 0.0)}% VWC<br>
+                <span style='color: #38BDF8;'>● Rain Intensity:</span> {current_stn.get('rain_intensity', current_stn.get('rainfall_intensity_mmh', 0.0))} mm/hr<br>
+                <span style='color: #FF7A00;'>● Slope Tilt:</span> {current_stn.get('tilt', 0.0):.2f}°<br>
+                <span style='color: #FF2A4D;'>● Vibration:</span> {'ACTIVE TREMOR ⚠️' if current_stn.get('vib') else 'Nominal Quiescence 🟢'}<br>
+                <span style='color: #A78BFA;'>● Temperature:</span> {current_stn.get('temp_c', current_stn.get('temperature_c', 20.0)):.1f}°C
+            </div>
+            <hr style='border: 0; border-top: 1px solid #1B2F4C; margin: 12px 0;'>
+            <div class='hud-eyebrow'>WEIGHTED COMPOSITE RISK RATIONALE:</div>
+            <div style='color: #F0F6FC; font-size: 13px; margin-top: 4px;'>
+                {current_stn.get('status_message', 'All 5 telemetry parameters evaluated.')}
+            </div>
+            <div style='margin-top: 8px; font-size: 12px; color: #8B9BB4;'>
+                <b>Recommended Mitigation Action:</b><br>
+                <span style='color:{current_stn["status_color"]}; font-weight:600;'>{current_stn.get("recommended_action")}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
                 {''.join([f"<div style='font-size:13px; color:#E2E8F0; margin-bottom:6px; display:flex; align-items:center; gap:8px;'><span style='color:#00F0FF;'>▸</span> {f}</div>" for f in current_stn.get('factors', [])])}
             </div>
             <hr style='border:0; border-top:1px solid #1B2F4C; margin:12px 0;'>
@@ -202,22 +232,25 @@ def render_risk_intelligence_page(enriched_stations):
 
     # 5. Geotechnical Sandbox Expander
     with st.expander("🛠️ Geotechnical Stress Simulation Sandbox", expanded=False):
-        st.markdown("Adjust hypothetical parameters to test immediate risk engine reaction:")
-        sb1, sb2, sb3, sb4 = st.columns(4)
+        st.markdown("Adjust hypothetical parameters to test immediate risk engine reaction across all 5 channels:")
+        sb1, sb2, sb3, sb4, sb5 = st.columns(5)
         with sb1:
-            t_soil = st.slider("Simulated Soil VWC (%)", 10.0, 100.0, float(current_stn.get("soil_moisture_pct", 45.0)))
+            t_soil = st.slider("Soil VWC (%)", 10.0, 100.0, float(current_stn.get("soil_moisture_pct", 45.0)), key="sb_soil")
         with sb2:
-            t_rain = st.slider("Simulated Rain Rate (mm/h)", 0.0, 60.0, float(current_stn.get("rainfall_intensity_mmh", 5.0)))
+            t_rain = st.slider("Rain (mm/h)", 0.0, 60.0, float(current_stn.get("rainfall_intensity_mmh", current_stn.get("rain_intensity", 5.0))), key="sb_rain")
         with sb3:
-            t_tilt = st.slider("Simulated Inclinometer Tilt (°)", 0.0, 5.0, float(current_stn.get("tilt", 0.35)))
+            t_tilt = st.slider("Tilt (°)", 0.0, 5.0, float(current_stn.get("tilt", 0.35)), key="sb_tilt")
         with sb4:
-            t_vib = st.checkbox("Trigger Seismic Tremor", value=current_stn.get("vib", False))
+            t_temp = st.slider("Temp (°C)", -10.0, 45.0, float(current_stn.get("temp_c", current_stn.get("temperature_c", 18.0))), key="sb_temp")
+        with sb5:
+            t_vib = st.checkbox("Trigger Seismic Tremor", value=current_stn.get("vib", False), key="sb_vib")
 
         test_res = calculate_risk(
             soil_moisture_pct=t_soil,
-            rainfall_intensity_mmh=t_rain,
+            rain_intensity_mmh=t_rain,
             tilt_degrees=t_tilt,
-            vibration_detected=t_vib
+            vibration_detected=t_vib,
+            temperature_c=t_temp
         )
 
-        st.info(f"**Sandbox Calculated Result:** Risk Index = **{test_res['risk_score']} / 100** ({test_res['risk_level']}) | Mitigation: {test_res['recommended_action']}")
+        st.info(f"**Sandbox Calculated Result:** Risk Index = **{test_res['risk_score']} / 100** ({test_res['risk_level']}) | Contributions: Soil {test_res.get('contributions',{}).get('soil',0)} pts, Rain {test_res.get('contributions',{}).get('rain',0)} pts, Slope {test_res.get('contributions',{}).get('slope',0)} pts, Vib {test_res.get('contributions',{}).get('vibration',0)} pts, Temp {test_res.get('contributions',{}).get('temperature',0)} pts | Mitigation: {test_res['recommended_action']}")

@@ -1,3 +1,4 @@
+import math
 """
 =============================================================================
 GEOGUARD AI — SATELLITE-POWERED TERRAIN RISK & EARLY WARNING PLATFORM
@@ -77,11 +78,18 @@ DEFAULT_CONFIG = {
     "vib_elevated_max": 0.18,     # Heavy traffic / minor tremors
     "vib_shock_min": 0.35,        # Major shock / rockfall impact
 
-    # Sensor Weights (25% each by default)
-    "weight_soil": 0.25,
-    "weight_temp": 0.25,
-    "weight_slope": 0.25,
-    "weight_vib": 0.25,
+    # Rain Intensity (mm/hr) - 5th Sensor Factor
+    "rain_dry_max": 2.0,          # Normal trace precipitation (<2 mm/hr)
+    "rain_moderate_max": 25.0,    # Elevated active rain loading (25 mm/hr)
+    "rain_critical_min": 50.0,    # Extreme precipitation / cloudburst (>50 mm/hr)
+    "rain_sim_max": 50.0,
+
+    # Sensor Weights (Exact 5-Factor Geotechnical Specification: Total = 100%)
+    "weight_soil": 0.25,          # 25% Soil Moisture
+    "weight_rain": 0.25,          # 25% Rain Intensity
+    "weight_slope": 0.25,         # 25% Slope Tilt Inclinometer
+    "weight_vib": 0.15,           # 15% Seismic Ground Vibration PGA
+    "weight_temp": 0.10,          # 10% Thermal Wedge / Freeze-Thaw
 
     # Classification Boundaries
     "threshold_low_max": 39.999,
@@ -265,9 +273,248 @@ def normalize_vibration_risk(
     return round(max(0.0, min(100.0, base)), 1)
 
 
+def normalize_rain_intensity_risk(
+    rain_intensity_mmh: Optional[float],
+    cfg: Optional[Dict[str, Any]] = None
+) -> Optional[float]:
+    """
+    Normalizes rainfall intensity (mm/hr) into a 0 to 100 risk sub-score.
+    Transparent monotonic linear mapping (simulation baseline):
+    - 0.0 mm/hr -> 0.0 risk points
+    - 12.5 mm/hr -> 25.0 risk points
+    - 25.0 mm/hr -> 50.0 risk points
+    - 37.5 mm/hr -> 75.0 risk points
+    - >= 50.0 mm/hr -> 100.0 risk points
+    Formula: clamp((rain_intensity / 50.0) * 100.0, 0, 100)
+    """
+    if rain_intensity_mmh is None:
+        return None
+    try:
+        val = float(rain_intensity_mmh)
+    except (ValueError, TypeError):
+        return None
+
+    if math.isnan(val) or math.isinf(val) or val < 0.0:
+        return None
+
+    score = (val / 50.0) * 100.0
+    return round(max(0.0, min(100.0, score)), 1)
+
+
+
 # =============================================================================
 # SECTION 3: 4-Factor Composite Landslide Risk Calculation
 # =============================================================================
+
+
+def calculate_five_sensor_risk(
+    soil_moisture_pct: Optional[float] = None,
+    temperature_c: Optional[float] = None,
+    tilt_degrees: Optional[float] = None,
+    vibration_pga: Optional[float] = None,
+    rain_intensity_mmh: Optional[float] = None,
+    vibration_detected: bool = False,
+    tilt_rate_deg_h: float = 0.0,
+    prev_temperature_c: Optional[float] = None,
+    soil_raw_adc: Optional[int] = None,
+    rain_adc: Optional[int] = None,
+    weights: Optional[Dict[str, float]] = None,
+    config: Optional[Dict[str, Any]] = None,
+    soil_adc: Optional[int] = None,
+    vibration_intensity_g: Optional[float] = None,
+    rain_intensity: Optional[float] = None,
+    rainfall_intensity_mmh: Optional[float] = None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Computes the 5-Factor Composite Landslide Risk Index:
+    1. Soil Moisture: 25% (0.25)
+    2. Rain Intensity: 25% (0.25)
+    3. Slope Tilt: 25% (0.25)
+    4. Vibration PGA: 15% (0.15)
+    5. Temperature: 10% (0.10)
+    Total Weights = 100% (1.00)
+
+    EXACT COMPOSITE FORMULA:
+    Overall Risk Score = (Soil Risk x 0.25)
+                       + (Rain Risk x 0.25)
+                       + (Slope Risk x 0.25)
+                       + (Vibration Risk x 0.15)
+                       + (Temperature Risk x 0.10)
+
+    EXACT RISK CLASSIFICATION:
+    - LOW: Overall score < 40.0 (Green #10B981)
+    - MODERATE: Overall score >= 40.0 and <= 70.0 (Yellow #F59E0B)
+    - CRITICAL: Overall score > 70.0 (Red #EF4444)
+    """
+    cfg = config or DEFAULT_CONFIG
+
+    # Normalize argument aliases
+    if soil_raw_adc is None:
+        soil_raw_adc = soil_adc if soil_adc is not None else kwargs.get("soil_adc")
+    if vibration_pga is None:
+        vibration_pga = vibration_intensity_g if vibration_intensity_g is not None else kwargs.get("vib_g", 0.0)
+    if tilt_degrees is None and "tilt" in kwargs:
+        tilt_degrees = kwargs.get("tilt")
+    if temperature_c is None and "temp_c" in kwargs:
+        temperature_c = kwargs.get("temp_c")
+
+    actual_rain = rain_intensity_mmh
+    if actual_rain is None:
+        actual_rain = rain_intensity if rain_intensity is not None else rainfall_intensity_mmh
+    if actual_rain is None and "rain_mmh" in kwargs:
+        actual_rain = kwargs.get("rain_mmh")
+    if actual_rain is None and "rain" in kwargs and isinstance(kwargs["rain"], (int, float)) and kwargs["rain"] <= 150.0:
+        actual_rain = kwargs["rain"]
+
+    # 5 Configurable sensor weights (sum to 1.0)
+    w_soil = weights.get("soil", cfg.get("weight_soil", 0.25)) if weights else cfg.get("weight_soil", 0.25)
+    w_rain = weights.get("rain", cfg.get("weight_rain", 0.25)) if weights else cfg.get("weight_rain", 0.25)
+    w_slope = weights.get("slope", cfg.get("weight_slope", 0.25)) if weights else cfg.get("weight_slope", 0.25)
+    w_vib = weights.get("vibration", cfg.get("weight_vib", 0.15)) if weights else cfg.get("weight_vib", 0.15)
+    w_temp = weights.get("temperature", cfg.get("weight_temp", 0.10)) if weights else cfg.get("weight_temp", 0.10)
+
+    # 1. Compute Individual Normalized Sub-scores (0-100 scale)
+    soil_score = normalize_soil_moisture_risk(soil_moisture_pct, raw_adc=soil_raw_adc, cfg=cfg)
+    rain_score = normalize_rain_intensity_risk(actual_rain, cfg=cfg)
+    slope_score = normalize_slope_tilt_risk(tilt_degrees, tilt_rate_deg_h=tilt_rate_deg_h, cfg=cfg)
+    vib_score = normalize_vibration_risk(vibration_pga, vib_detected=vibration_detected, cfg=cfg)
+    temp_score = normalize_temperature_risk(temperature_c, prev_temp_c=prev_temperature_c, cfg=cfg)
+
+    subscores = {
+        "soil": soil_score,
+        "rain": rain_score,
+        "slope": slope_score,
+        "vibration": vib_score,
+        "temperature": temp_score
+    }
+
+    # 2. Check Data Completeness & Integrity Policy
+    missing_sensors = [name for name, score in subscores.items() if score is None]
+    is_valid = (len(missing_sensors) == 0)
+
+    # 3. Missing / Stale Telemetry Conservative Policy
+    if not is_valid:
+        data_quality = "PARTIAL" if len(missing_sensors) == 1 else ("DEGRADED" if len(missing_sensors) == 2 else "FAULT")
+        msg = f"Incomplete Telemetry: Missing {', '.join(missing_sensors)}. Safety cannot be certified."
+        clean_scores = {k: (v if v is not None else 0.0) for k, v in subscores.items()}
+        return {
+            "overall_risk_score": 0.0,
+            "risk_score": 0.0,
+            "risk_level": "UNKNOWN DATA",
+            "status_color": "#94A3B8",
+            "status_message": msg,
+            "recommended_action": msg,
+            "is_valid": False,
+            "is_complete": False,
+            "data_quality": data_quality,
+            "sensor_scores": clean_scores,
+            "breakdown": clean_scores,
+            "factors": [f"Missing {', '.join(missing_sensors)} reading(s)"],
+            "missing_sensors": missing_sensors,
+            "weights": {
+                "soil": w_soil,
+                "rain": w_rain,
+                "slope": w_slope,
+                "vibration": w_vib,
+                "temperature": w_temp
+            },
+            "immediate_warning": False,
+            "immediate_triggers": []
+        }
+
+    # 4. Composite Formula: Weighted Sum of Sub-scores
+    overall_score = round(
+        (soil_score * w_soil) +
+        (rain_score * w_rain) +
+        (slope_score * w_slope) +
+        (vib_score * w_vib) +
+        (temp_score * w_temp),
+        1
+    )
+    overall_score = max(0.0, min(100.0, overall_score))
+
+    # 5. Exact Classification Rule
+    if overall_score < 40.0:
+        risk_level = "LOW"
+        status_color = "#10B981"  # GREEN
+        status_message = "Low Risk - Conditions appear normal"
+    elif 40.0 <= overall_score <= 70.0:
+        risk_level = "MODERATE"
+        status_color = "#F59E0B"  # YELLOW
+        status_message = "Moderate Risk - Warning state active"
+    else:
+        risk_level = "CRITICAL"
+        status_color = "#EF4444"  # RED
+        status_message = "Critical Danger - Emergency response required"
+
+    # 6. Immediate acute hazard triggers
+    immediate_warning = False
+    immediate_triggers = []
+
+    if rain_score >= 80.0:
+        immediate_warning = True
+        immediate_triggers.append(f"Torrential rain intensity ({float(actual_rain):.1f} mm/hr)")
+    if tilt_degrees is not None and abs(float(tilt_degrees)) >= 2.5:
+        immediate_warning = True
+        immediate_triggers.append(f"Acute slope displacement ({float(tilt_degrees):.2f}°)")
+    if tilt_rate_deg_h is not None and abs(float(tilt_rate_deg_h)) >= 0.30:
+        immediate_warning = True
+        immediate_triggers.append(f"Accelerated slope creep rate (+{float(tilt_rate_deg_h):.2f}°/h)")
+    if vibration_detected or (vibration_pga is not None and float(vibration_pga) >= 0.35):
+        immediate_warning = True
+        immediate_triggers.append(f"Abnormal seismic ground shock ({float(vibration_pga or 0.0):.2f}g PGA)")
+
+    clean_scores = {
+        "soil": soil_score,
+        "rain": rain_score,
+        "slope": slope_score,
+        "vibration": vib_score,
+        "temperature": temp_score
+    }
+
+    contributions = {
+        "soil": round(soil_score * w_soil, 2),
+        "rain": round(rain_score * w_rain, 2),
+        "slope": round(slope_score * w_slope, 2),
+        "vibration": round(vib_score * w_vib, 2),
+        "temperature": round(temp_score * w_temp, 2)
+    }
+
+    factors_list = list(immediate_triggers)
+    if not factors_list:
+        if risk_level == "CRITICAL":
+            factors_list.append("Multiple geotechnical sensors exhibiting critical landslide risk")
+        elif risk_level == "MODERATE":
+            factors_list.append("Elevated sensor measurements in warning state")
+        else:
+            factors_list.append("All 5 geotechnical sensors nominal")
+
+    return {
+        "overall_risk_score": overall_score,
+        "risk_score": overall_score,
+        "risk_level": risk_level,
+        "status_color": status_color,
+        "status_message": status_message,
+        "recommended_action": status_message,
+        "is_valid": True,
+        "is_complete": True,
+        "data_quality": "VALID",
+        "sensor_scores": clean_scores,
+        "breakdown": clean_scores,
+        "contributions": contributions,
+        "factors": factors_list,
+        "weights": {
+            "soil": w_soil,
+            "rain": w_rain,
+            "slope": w_slope,
+            "vibration": w_vib,
+            "temperature": w_temp
+        },
+        "missing_sensors": [],
+        "immediate_warning": immediate_warning,
+        "immediate_triggers": immediate_triggers
+    }
 
 def calculate_four_sensor_risk(
     soil_moisture_pct: Optional[float] = None,
@@ -502,5 +749,5 @@ def build_four_sensor_risk_gauge(
 
 
 # Backward compatibility alias
-calculate_risk = calculate_four_sensor_risk
+calculate_risk = calculate_five_sensor_risk
 build_risk_gauge = build_four_sensor_risk_gauge

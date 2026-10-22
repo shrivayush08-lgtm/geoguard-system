@@ -47,6 +47,7 @@ from modules.ui import (
     COLOR_BORDER
 )
 from modules.risk_engine import (
+    calculate_five_sensor_risk,
     calculate_four_sensor_risk,
     build_four_sensor_risk_gauge,
     normalize_soil_moisture_risk,
@@ -226,8 +227,12 @@ def render_live_sensor_page(enriched_stations):
     # -------------------------------------------------------------------------
     # 4. Automatic Landslide Risk Assessment
     # -------------------------------------------------------------------------
-    risk_res = calculate_four_sensor_risk(
+    raw_rain_obj = target_stn.get("rain_intensity", target_stn.get("rainfall_intensity_mmh"))
+    rain_mmh = float(raw_rain_obj) if raw_rain_obj is not None else None
+
+    risk_res = calculate_five_sensor_risk(
         soil_moisture_pct=soil_pct,
+        rain_intensity_mmh=rain_mmh,
         temperature_c=temp_c,
         tilt_degrees=tilt_deg,
         vibration_pga=vib_g,
@@ -312,9 +317,9 @@ def render_live_sensor_page(enriched_stations):
 
     card_c1, card_c2, card_c3, card_c4 = st.columns(4)
 
-    # CARD 1: Soil Moisture Sensor
+    # CARD 1: Soil Moisture Sensor (Weight: 25%)
     with card_c1:
-        soil_risk = sensor_scores["soil"]
+        soil_risk = sensor_scores.get("soil", 0.0)
         s_status = "CRITICAL" if soil_risk > 70 else ("ELEVATED" if soil_risk >= 40 else "NORMAL")
         s_color = "#EF4444" if s_status == "CRITICAL" else ("#F59E0B" if s_status == "ELEVATED" else "#10B981")
         with st.container(border=True):
@@ -340,37 +345,47 @@ def render_live_sensor_page(enriched_stations):
             </div>
             """)
 
-    # CARD 2: Temperature Sensor
+    # CARD 2: Rain Intensity Sensor (Weight: 25% - 5th Sensor Channel)
     with card_c2:
-        temp_risk = sensor_scores["temperature"]
-        t_status = "CRITICAL" if temp_risk > 70 else ("ELEVATED" if temp_risk >= 40 else "NORMAL")
-        t_color = "#EF4444" if t_status == "CRITICAL" else ("#F59E0B" if t_status == "ELEVATED" else "#10B981")
+        rain_risk = sensor_scores.get("rain", 0.0)
+        is_rain_avail = (rain_mmh is not None)
+        if not is_rain_avail:
+            r_status = "UNAVAILABLE"
+            r_color = "#94A3B8"
+            rain_val_str = "N/A"
+            rain_subtext = "Sensor Offline / Missing"
+        else:
+            r_status = "CRITICAL" if rain_risk > 70 else ("ELEVATED" if rain_risk >= 40 else "NORMAL")
+            r_color = "#EF4444" if r_status == "CRITICAL" else ("#F59E0B" if r_status == "ELEVATED" else "#10B981")
+            rain_val_str = f"{rain_mmh:.1f}"
+            rain_subtext = "Active Precipitation Loading" if rain_mmh > 2.0 else "Dry Baseline (<2 mm/h)"
+
         with st.container(border=True):
             render_html(f"""
             <div style='display: flex; justify-content: space-between; align-items: center;'>
-                <span style='font-size: 11px; font-weight: 600; color: #94A3B8; text-transform: uppercase;'>2. Temperature</span>
-                <span style='font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 600; color: {t_color}; background: rgba({_hex_to_rgb(t_color)}, 0.12); padding: 2px 6px; border-radius: 3px;'>
-                    ● {t_status}
+                <span style='font-size: 11px; font-weight: 600; color: #94A3B8; text-transform: uppercase;'>2. Rain Intensity</span>
+                <span style='font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 600; color: {r_color}; background: rgba({_hex_to_rgb(r_color)}, 0.12); padding: 2px 6px; border-radius: 3px;'>
+                    ● {r_status}
                 </span>
             </div>
-            <div style='font-size: 24px; font-weight: 700; color: {t_color}; margin-top: 4px; font-family: "Inter", sans-serif;'>
-                {temp_c:.1f} <span style='font-size: 13px; font-weight: 500; color: #94A3B8;'>°C</span>
+            <div style='font-size: 24px; font-weight: 700; color: {r_color}; margin-top: 4px; font-family: "Inter", sans-serif;'>
+                {rain_val_str} <span style='font-size: 13px; font-weight: 500; color: #94A3B8;'>mm/hr</span>
             </div>
             <div style='font-size: 11px; color: #64748B; margin-bottom: 4px;'>
-                {"Freeze-Thaw Fissure Zone" if -4.0 <= temp_c <= 4.0 else "Thermal Gradient: Stable"}
+                {rain_subtext}
             </div>
             """)
-            st.plotly_chart(render_sparkline_chart(spark_temp, color_hex=t_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_temp_chart')
+            st.plotly_chart(render_sparkline_chart(spark_rain, color_hex=r_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_rain_chart')
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
-                <span>Thermal Wedge Risk:</span>
-                <b style='color: {t_color};'>{temp_risk:.1f} / 100</b>
+                <span>Rain Risk Factor:</span>
+                <b style='color: {r_color};'>{rain_risk:.1f} / 100</b>
             </div>
             """)
 
-    # CARD 3: Slope / Tilt Sensor
+    # CARD 3: Slope / Tilt Sensor (Weight: 25%)
     with card_c3:
-        slope_risk = sensor_scores["slope"]
+        slope_risk = sensor_scores.get("slope", 0.0)
         sl_status = "CRITICAL" if slope_risk > 70 else ("ELEVATED" if slope_risk >= 40 else "NORMAL")
         sl_color = "#EF4444" if sl_status == "CRITICAL" else ("#F59E0B" if sl_status == "ELEVATED" else "#10B981")
         with st.container(border=True):
@@ -396,9 +411,9 @@ def render_live_sensor_page(enriched_stations):
             </div>
             """)
 
-    # CARD 4: Vibration Sensor
+    # CARD 4: Vibration Sensor (Weight: 15%)
     with card_c4:
-        vib_risk = sensor_scores["vibration"]
+        vib_risk = sensor_scores.get("vibration", 0.0)
         v_status = "CRITICAL" if vib_risk > 70 else ("ELEVATED" if vib_risk >= 40 else "NORMAL")
         v_color = "#EF4444" if v_status == "CRITICAL" else ("#F59E0B" if v_status == "ELEVATED" else "#10B981")
         with st.container(border=True):
@@ -420,7 +435,35 @@ def render_live_sensor_page(enriched_stations):
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
                 <span>Seismic Shock Risk:</span>
-                <b style='color: {v_color};'>{vib_risk:.1f} / 100</b>
+                <b style='color: {vib_risk:.1f} / 100</b>
+            </div>
+            """)
+
+    # CARD 5: Temperature Sensor (Weight: 10%)
+    with card_c5:
+        temp_risk = sensor_scores.get("temperature", 0.0)
+        t_status = "CRITICAL" if temp_risk > 70 else ("ELEVATED" if temp_risk >= 40 else "NORMAL")
+        t_color = "#EF4444" if t_status == "CRITICAL" else ("#F59E0B" if t_status == "ELEVATED" else "#10B981")
+        with st.container(border=True):
+            render_html(f"""
+            <div style='display: flex; justify-content: space-between; align-items: center;'>
+                <span style='font-size: 11px; font-weight: 600; color: #94A3B8; text-transform: uppercase;'>5. Temperature</span>
+                <span style='font-family: "JetBrains Mono", monospace; font-size: 10px; font-weight: 600; color: {t_color}; background: rgba({_hex_to_rgb(t_color)}, 0.12); padding: 2px 6px; border-radius: 3px;'>
+                    ● {t_status}
+                </span>
+            </div>
+            <div style='font-size: 24px; font-weight: 700; color: {t_color}; margin-top: 4px; font-family: "Inter", sans-serif;'>
+                {temp_c:.1f} <span style='font-size: 13px; font-weight: 500; color: #94A3B8;'>°C</span>
+            </div>
+            <div style='font-size: 11px; color: #64748B; margin-bottom: 4px;'>
+                {"Freeze-Thaw Fissure Zone" if -4.0 <= temp_c <= 4.0 else "Thermal Gradient: Stable"}
+            </div>
+            """)
+            st.plotly_chart(render_sparkline_chart(spark_temp, color_hex=t_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_temp_chart')
+            render_html(f"""
+            <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
+                <span>Thermal Wedge Risk:</span>
+                <b style='color: {temp_risk:.1f} / 100</b>
             </div>
             """)
 
@@ -451,26 +494,35 @@ def render_live_sensor_page(enriched_stations):
                 {status_msg}
             </div>
             <div style='font-size: 11px; color: #64748B; margin-top: 4px;'>
-                Piecewise evaluation across 4 environmental transducers. Equal 25% distribution.
+                Piecewise evaluation across 5 geotechnical transducers (Soil 25%, Rain 25%, Slope 25%, Vib 15%, Temp 10%).
             </div>
         </div>
         """)
 
-        w_soil = st.session_state.sensor_weights["soil"]
-        w_temp = st.session_state.sensor_weights["temperature"]
-        w_slope = st.session_state.sensor_weights["slope"]
-        w_vib = st.session_state.sensor_weights["vibration"]
+        weights_dict = target_stn.get("weights", {"soil": 0.25, "rain": 0.25, "slope": 0.25, "vibration": 0.15, "temperature": 0.10})
+        w_soil = weights_dict.get("soil", 0.25)
+        w_rain = weights_dict.get("rain", 0.25)
+        w_slope = weights_dict.get("slope", 0.25)
+        w_vib = weights_dict.get("vibration", 0.15)
+        w_temp = weights_dict.get("temperature", 0.10)
+
+        c_soil = soil_risk * w_soil
+        c_rain = rain_risk * w_rain
+        c_slope = slope_risk * w_slope
+        c_vib = vib_risk * w_vib
+        c_temp = temp_risk * w_temp
 
         render_html(f"""
         <div style='background: #111827; border: 1px solid #1F2937; border-radius: 8px; padding: 14px 18px;'>
-            <div style='font-size: 11px; font-weight: 600; color: #38BDF8; text-transform: uppercase; margin-bottom: 8px;'>
-                Contributing Risk Sub-Scores (0–100 Scale)
+            <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;'>
+                <span style='font-size: 11px; font-weight: 600; color: #38BDF8; text-transform: uppercase;'>5-Factor Contributing Risk Breakdown (100% Weight)</span>
+                <span style='font-size: 10px; color: #10B981; font-family: "JetBrains Mono", monospace;'>Sum: 100%</span>
             </div>
             <div style='display: flex; flex-direction: column; gap: 8px; font-family: "JetBrains Mono", monospace; font-size: 11px;'>
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
-                        <span>💧 Soil Moisture Risk:</span>
-                        <b>{soil_risk:.1f} / 100 <span style='color:#64748B;'>(Weight: {w_soil:.2f})</span></b>
+                        <span>💧 Soil Moisture ({soil_pct:.1f}% VWC):</span>
+                        <b>{soil_risk:.1f}/100 | W: {w_soil*100:.0f}% | +{c_soil:.1f} pts</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
                         <div style='background: #38BDF8; width: {soil_risk}%; height: 100%;'></div>
@@ -478,17 +530,17 @@ def render_live_sensor_page(enriched_stations):
                 </div>
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
-                        <span>🌡️ Temperature Risk:</span>
-                        <b>{temp_risk:.1f} / 100 <span style='color:#64748B;'>(Weight: {w_temp:.2f})</span></b>
+                        <span>🌧️ Rain Intensity ({rain_mmh_val:.1f} mm/h):</span>
+                        <b>{rain_risk:.1f}/100 | W: {w_rain*100:.0f}% | +{c_rain:.1f} pts</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
-                        <div style='background: #10B981; width: {temp_risk}%; height: 100%;'></div>
+                        <div style='background: #0284C7; width: {rain_risk}%; height: 100%;'></div>
                     </div>
                 </div>
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
-                        <span>📐 Slope Inclinometer Risk:</span>
-                        <b>{slope_risk:.1f} / 100 <span style='color:#64748B;'>(Weight: {w_slope:.2f})</span></b>
+                        <span>📐 Slope Inclinometer ({tilt_deg:.2f}°):</span>
+                        <b>{slope_risk:.1f}/100 | W: {w_slope*100:.0f}% | +{c_slope:.1f} pts</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
                         <div style='background: #F59E0B; width: {slope_risk}%; height: 100%;'></div>
@@ -496,16 +548,25 @@ def render_live_sensor_page(enriched_stations):
                 </div>
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
-                        <span>⚡ Seismic Vibration Risk:</span>
-                        <b>{vib_risk:.1f} / 100 <span style='color:#64748B;'>(Weight: {w_vib:.2f})</span></b>
+                        <span>⚡ Seismic Vibration ({vib_g:.3f}g):</span>
+                        <b>{vib_risk:.1f}/100 | W: {w_vib*100:.0f}% | +{c_vib:.1f} pts</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
                         <div style='background: #EF4444; width: {vib_risk}%; height: 100%;'></div>
                     </div>
                 </div>
+                <div>
+                    <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
+                        <span>🌡️ Temperature ({temp_c:.1f}°C):</span>
+                        <b>{temp_risk:.1f}/100 | W: {w_temp*100:.0f}% | +{c_temp:.1f} pts</b>
+                    </div>
+                    <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
+                        <div style='background: #10B981; width: {temp_risk}%; height: 100%;'></div>
+                    </div>
+                </div>
             </div>
             <div style='font-size: 10px; color: #64748B; margin-top: 8px;'>
-                Formula: Overall Score = (Soil × {w_soil:.2f} + Temp × {w_temp:.2f} + Slope × {w_slope:.2f} + Vib × {w_vib:.2f})
+                Exact Formula: Composite Risk = (Soil × 0.25) + (Rain × 0.25) + (Slope × 0.25) + (Vib × 0.15) + (Temp × 0.10)
             </div>
         </div>
         """)
@@ -660,7 +721,8 @@ def render_live_sensor_page(enriched_stations):
     else:
         plotly_theme = get_plotly_theme()
 
-        # 4 Separate Line Charts (Soil, Temp, Tilt, Vibration)
+        # 6 Separate Time-Series Charts (5 Transducers + 1 Composite Risk Index)
+        # Row 1: Soil Moisture & Rain Intensity
         chart_r1_c1, chart_r1_c2 = st.columns(2)
         with chart_r1_c1:
             st.markdown("#### 1. Soil Moisture vs Time (% VWC)")
@@ -679,20 +741,24 @@ def render_live_sensor_page(enriched_stations):
             st.plotly_chart(fig_soil, use_container_width=True, key='history_soil_chart')
 
         with chart_r1_c2:
-            st.markdown("#### 2. Temperature vs Time (°C)")
-            fig_temp = go.Figure()
-            t_col = "temperature_c" if "temperature_c" in hist_df.columns else "temp_c"
-            fig_temp.add_trace(go.Scatter(
+            st.markdown("#### 2. Rain Intensity vs Time (mm/hr)")
+            fig_rain = go.Figure()
+            r_col = "rainfall_intensity_mmh" if "rainfall_intensity_mmh" in hist_df.columns else "rain_intensity"
+            fig_rain.add_trace(go.Scatter(
                 x=hist_df["datetime"],
-                y=hist_df[t_col] if t_col in hist_df.columns else [temp_c]*len(hist_df),
-                name="Temperature (°C)",
-                line=dict(color="#10B981", width=2.0),
+                y=hist_df[r_col] if r_col in hist_df.columns else [rain_mmh_val]*len(hist_df),
+                name="Rain Intensity (mm/hr)",
+                line=dict(color="#0284C7", width=2.0),
+                fill="tozeroy",
+                fillcolor="rgba(2, 132, 199, 0.08)",
                 mode="lines"
             ))
-            fig_temp.add_hrect(y0=-4.0, y1=4.0, line_width=0, fillcolor="rgba(239, 68, 68, 0.15)", annotation_text="Freeze-Thaw Fissure Zone (-4°C to +4°C)", annotation_font_color="#EF4444")
-            fig_temp.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_temp, use_container_width=True, key='history_temp_chart')
+            fig_rain.add_hline(y=25.0, line_dash="dash", line_color="#F59E0B", annotation_text="Elevated Rain (25 mm/h)", annotation_font_color="#F59E0B")
+            fig_rain.add_hline(y=50.0, line_dash="dash", line_color="#EF4444", annotation_text="Critical Cloudburst (50 mm/h)", annotation_font_color="#EF4444")
+            fig_rain.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_rain, use_container_width=True, key='history_rain_chart')
 
+        # Row 2: Tilt Angle & Vibration PGA
         chart_r2_c1, chart_r2_c2 = st.columns(2)
         with chart_r2_c1:
             st.markdown("#### 3. Slope / Tilt Angle vs Time (Degrees)")
@@ -724,15 +790,33 @@ def render_live_sensor_page(enriched_stations):
             fig_vib.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_vib, use_container_width=True, key='history_vib_chart')
 
-        # 5th Chart: Composite Landslide Risk Score with 40 and 70 reference lines
-        st.markdown("#### 5. Composite Landslide Risk Index vs Time")
-        fig_comp = go.Figure()
+        # Row 3: Temperature & Composite Risk Index
+        chart_r3_c1, chart_r3_c2 = st.columns(2)
+        with chart_r3_c1:
+            st.markdown("#### 5. Temperature vs Time (°C)")
+            fig_temp = go.Figure()
+            t_col = "temperature_c" if "temperature_c" in hist_df.columns else "temp_c"
+            fig_temp.add_trace(go.Scatter(
+                x=hist_df["datetime"],
+                y=hist_df[t_col] if t_col in hist_df.columns else [temp_c]*len(hist_df),
+                name="Temperature (°C)",
+                line=dict(color="#10B981", width=2.0),
+                mode="lines"
+            ))
+            fig_temp.add_hrect(y0=-4.0, y1=4.0, line_width=0, fillcolor="rgba(239, 68, 68, 0.15)", annotation_text="Freeze-Thaw Fissure Zone (-4°C to +4°C)", annotation_font_color="#EF4444")
+            fig_temp.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
+            st.plotly_chart(fig_temp, use_container_width=True, key='history_temp_chart')
+
+        with chart_r3_c2:
+            st.markdown("#### 6. Composite Landslide Risk Index vs Time")
+            fig_comp = go.Figure()
 
         # Compute composite risk trace across historical dataframe
         risk_hist = []
         for _, row in hist_df.iterrows():
-            r = calculate_four_sensor_risk(
+            r = calculate_five_sensor_risk(
                 soil_moisture_pct=row.get("soil_moisture_pct", 30.0),
+                rain_intensity_mmh=row.get("rainfall_intensity_mmh", 0.0),
                 temperature_c=row.get("temperature_c", 14.5),
                 tilt_degrees=row.get("tilt_degrees", 0.3),
                 vibration_pga=row.get("vibration_intensity_g", 0.02)

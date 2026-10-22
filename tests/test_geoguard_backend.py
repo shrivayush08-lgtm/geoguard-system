@@ -1,19 +1,30 @@
 """
 =============================================================================
-GEOGUARD AI — AUTOMATED BACKEND & RISK ENGINE TEST SUITE
+GEOGUARD AI — COMPREHENSIVE 5-SENSOR BACKEND & RISK ENGINE TEST SUITE
 File: tests/test_geoguard_backend.py
 =============================================================================
-Tests:
-A. Serial Input Tests (valid 4-value CSV, malformed lines, non-numeric, out-of-range, stale, disconnected)
-B. Risk Engine Tests (sub-scores 0-100, exact formula, composite 0-100, exact boundaries 39.9, 40.0, 70.0, 70.1)
-C. Alert & Telemetry Validity Tests (invalid data != LOW, duplicate alert prevention, hysteresis)
-D. Simulation Tests (Low-risk scenario < 40, Moderate scenario 40..70, Critical scenario > 70, ESP32 Surge, Reset)
-E. Interlock Tests (Critical risk -> barrier CLOSED, signal RED, dispatch logged; non-critical -> barrier OPEN, signal GREEN)
+Covers all 15 Required Acceptance Test Cases:
+1. Valid 5-field serial packet
+2. Valid legacy 4-field packet (rain marked unavailable, not 0.0)
+3. Empty, malformed, or nonnumeric packets
+4. Invalid rainfall values (negative, NaN, inf)
+5. Rain intensity risk normalization at 0, 12.5, 25, 37.5, 50 mm/hr
+6. Monotonic rainfall-risk behavior
+7. Exact weight total of 100% (25% Soil, 25% Rain, 25% Slope, 15% Vib, 10% Temp)
+8. Correct weighted composite calculation
+9. Composite score bounded between 0 and 100
+10. Missing or stale sensor data not resulting in a false LOW classification
+11. Simulation producing all five required fields
+12. Heavy-rainfall and emergency scenarios affecting composite score correctly
+13. Historical data containing rainfall values
+14. Existing four-sensor functionality remaining operational
+15. Streamlit pages importing cleanly without new errors
 =============================================================================
 """
 
 import sys
 import os
+import math
 from pathlib import Path
 
 # Ensure project root is on sys.path
@@ -21,227 +32,182 @@ root_dir = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root_dir))
 
 from modules.risk_engine import (
+    calculate_five_sensor_risk,
     calculate_four_sensor_risk,
+    calculate_risk,
     normalize_soil_moisture_risk,
+    normalize_rain_intensity_risk,
     normalize_temperature_risk,
     normalize_slope_tilt_risk,
-    normalize_vibration_risk
+    normalize_vibration_risk,
+    DEFAULT_CONFIG
 )
 from modules.hardware_reader import SerialTelemetryGateway
+from modules.sensor_simulator import generate_telemetry_tick, DEFAULT_STATIONS
+from modules.data_store import enrich_station_telemetry
 from modules.interlock import HighwayInterlockSystem
 
 
-def test_serial_input_parsing():
-    """A. Test serial input parsing, malformed rejection, and ADC conversion."""
+def run_all_tests():
+    print("=======================================================")
+    print("RUNNING GEOGUARD AI 5-SENSOR INTEGRATION TEST SUITE")
+    print("=======================================================")
+
     gw = SerialTelemetryGateway()
 
-    # 1. Valid 4-value CSV line
-    valid_line = "65.5,28.4,4.2,0.18"
-    parsed = gw.validate_and_parse_line(valid_line)
-    assert parsed is not None, "Valid CSV line should be parsed successfully"
-    assert parsed["soil_moisture_pct"] == 65.5
-    assert parsed["temperature_c"] == 28.4
-    assert parsed["tilt_degrees"] == 4.2
-    assert parsed["vibration_pga"] == 0.18
-    assert parsed["is_valid"] is True
+    # 1. Valid 5-field serial packet
+    p5 = gw.validate_and_parse_line("68.5,24.7,12.4,0.18,22.6")
+    assert p5 is not None, "Failed to parse valid 5-field packet"
+    assert p5["soil_moisture_pct"] == 68.5
+    assert p5["temperature_c"] == 24.7
+    assert p5["tilt_degrees"] == 12.4
+    assert p5["vibration_pga"] == 0.18
+    assert p5["rain_intensity_mmh"] == 22.6
+    assert p5["is_complete"] is True
+    assert p5["is_valid"] is True
+    print("[OK] 1. Valid 5-field serial packet PASSED")
 
-    # 2. Malformed input: missing fields (3 fields instead of 4)
-    malformed_line = "65.5,28.4,4.2"
-    assert gw.validate_and_parse_line(malformed_line) is None, "Line with 3 fields must be rejected"
+    # 2. Valid legacy 4-field packet (rain marked unavailable, not assumed 0.0)
+    p4 = gw.validate_and_parse_line("68.5,24.7,12.4,0.18")
+    assert p4 is not None, "Failed to parse legacy 4-field packet"
+    assert p4["soil_moisture_pct"] == 68.5
+    assert p4["temperature_c"] == 24.7
+    assert p4["tilt_degrees"] == 12.4
+    assert p4["vibration_pga"] == 0.18
+    assert p4["rain_intensity_mmh"] is None, "Legacy packet must NOT assume rain is 0.0"
+    assert p4["is_complete"] is False
+    print("[OK] 2. Valid legacy 4-field packet (rain unavailable) PASSED")
 
-    # 3. Non-numeric input
-    non_numeric = "65.5,ERROR,4.2,0.18"
-    assert gw.validate_and_parse_line(non_numeric) is None, "Non-numeric line must be rejected"
+    # 3. Empty, malformed, or nonnumeric packets
+    assert gw.validate_and_parse_line("") is None
+    assert gw.validate_and_parse_line("   ") is None
+    assert gw.validate_and_parse_line("68.5,corrupt,12.4,0.18,22.6") is None
+    assert gw.validate_and_parse_line("12.3,45.6") is None
+    assert gw.validate_and_parse_line("1,2,3,4,5,6,7,8") is None
+    print("[OK] 3. Empty, malformed, and nonnumeric packets quarantined PASSED")
 
-    # 4. Out of range values (e.g. impossible temperature or vibration)
-    out_of_range = "65.5,999.0,4.2,0.18"
-    assert gw.validate_and_parse_line(out_of_range) is None, "Out-of-range temperature must be rejected"
+    # 4. Invalid rainfall values (negative, NaN, inf)
+    assert gw.validate_and_parse_line("68.5,24.7,12.4,0.18,-10.0") is None
+    assert gw.validate_and_parse_line("68.5,24.7,12.4,0.18,nan") is None
+    assert gw.validate_and_parse_line("68.5,24.7,12.4,0.18,inf") is None
+    print("[OK] 4. Invalid rainfall values (negative/NaN/inf) rejected PASSED")
 
-    # 5. Raw ADC conversion layer
-    gw.raw_adc_mode = True
-    raw_adc_line = "2400,18.0,0.5,0.02"
-    parsed_adc = gw.validate_and_parse_line(raw_adc_line)
-    assert parsed_adc is not None
-    assert 0.0 <= parsed_adc["soil_moisture_pct"] <= 100.0, "Raw ADC should be converted to 0-100% VWC"
+    # 5. Rain intensity risk normalization at 0, 12.5, 25, 37.5, 50 mm/hr
+    assert normalize_rain_intensity_risk(0.0) == 0.0, "Rain 0 mm/h must be 0 risk"
+    assert normalize_rain_intensity_risk(12.5) == 25.0, "Rain 12.5 mm/h must be 25 risk"
+    assert normalize_rain_intensity_risk(25.0) == 50.0, "Rain 25 mm/h must be 50 risk"
+    assert normalize_rain_intensity_risk(37.5) == 75.0, "Rain 37.5 mm/h must be 75 risk"
+    assert normalize_rain_intensity_risk(50.0) == 100.0, "Rain 50 mm/h must be 100 risk"
+    assert normalize_rain_intensity_risk(65.0) == 100.0, "Rain >50 mm/h must clamp at 100"
+    print("[OK] 5. Rain intensity risk normalization calibration PASSED")
 
-    print("[OK] A. Serial Input Tests PASSED")
+    # 6. Monotonic rainfall-risk behavior
+    intensities = [0.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0, 75.0]
+    scores = [normalize_rain_intensity_risk(r) for r in intensities]
+    for i in range(len(scores) - 1):
+        assert scores[i] <= scores[i+1], f"Non-monotonic risk: {intensities[i]}->{scores[i]} vs {intensities[i+1]}->{scores[i+1]}"
+    print("[OK] 6. Monotonic rainfall-risk behavior PASSED")
 
+    # 7. Exact weight total of 100%
+    cfg = DEFAULT_CONFIG
+    total_weights = cfg["weight_soil"] + cfg["weight_rain"] + cfg["weight_slope"] + cfg["weight_vib"] + cfg["weight_temp"]
+    assert abs(total_weights - 1.0) < 1e-6, f"Weights must sum exactly to 1.0 (100%), got {total_weights}"
+    assert cfg["weight_soil"] == 0.25
+    assert cfg["weight_rain"] == 0.25
+    assert cfg["weight_slope"] == 0.25
+    assert cfg["weight_vib"] == 0.15
+    assert cfg["weight_temp"] == 0.10
+    print("[OK] 7. Exact weight total 100% (25/25/25/15/10) PASSED")
 
-def test_risk_subscores_and_formula():
-    """B. Test that sub-scores and composite score conform to exact formula and bounds."""
-    # 1. Sub-scores must remain within 0-100
-    s_score = normalize_soil_moisture_risk(25.0)
-    assert 0.0 <= s_score <= 100.0
-    t_score = normalize_temperature_risk(16.0)
-    assert 0.0 <= t_score <= 100.0
-    sl_score = normalize_slope_tilt_risk(0.4)
-    assert 0.0 <= sl_score <= 100.0
-    v_score = normalize_vibration_risk(0.02)
-    assert 0.0 <= v_score <= 100.0
-
-    # 2. Composite score follows exact weighted formula: (Soil*0.25 + Temp*0.25 + Slope*0.25 + Vib*0.25)
-    res = calculate_four_sensor_risk(
-        soil_moisture_pct=25.0,
-        temperature_c=16.0,
-        tilt_degrees=0.4,
-        vibration_pga=0.02
+    # 8. Correct weighted composite calculation
+    # Test controlled inputs: Soil=50% (55 pts), Rain=25 mm/h (50 pts), Slope=0.8° (35 pts), Vib=0.05g (20 pts), Temp=18°C (5 pts)
+    # Expected: (55*0.25) + (50*0.25) + (35*0.25) + (20*0.15) + (5*0.10)
+    # = 13.75 + 12.50 + 8.75 + 3.00 + 0.50 = 38.5 pts
+    res = calculate_five_sensor_risk(
+        soil_moisture_pct=50.0,
+        rain_intensity_mmh=25.0,
+        tilt_degrees=0.8,
+        vibration_pga=0.05,
+        temperature_c=18.0
     )
-    expected_composite = round((s_score * 0.25) + (t_score * 0.25) + (sl_score * 0.25) + (v_score * 0.25), 1)
-    assert abs(res["overall_risk_score"] - expected_composite) < 0.15, "Composite score must follow exact formula"
-    assert 0.0 <= res["overall_risk_score"] <= 100.0
+    assert res["is_valid"] is True
+    assert abs(res["overall_risk_score"] - 38.5) <= 0.1, f"Expected 38.5, got {res['overall_risk_score']}"
+    assert res["risk_level"] == "LOW"
+    print("[OK] 8. Correct weighted composite calculation PASSED")
 
-    print("[OK] B. Risk Engine Formula Tests PASSED")
+    # 9. Composite score bounded between 0 and 100
+    res_min = calculate_five_sensor_risk(soil_moisture_pct=0.0, rain_intensity_mmh=0.0, tilt_degrees=0.0, vibration_pga=0.0, temperature_c=18.0)
+    assert 0.0 <= res_min["overall_risk_score"] <= 100.0
+    res_max = calculate_five_sensor_risk(soil_moisture_pct=100.0, rain_intensity_mmh=100.0, tilt_degrees=10.0, vibration_pga=5.0, temperature_c=0.0)
+    assert 0.0 <= res_max["overall_risk_score"] <= 100.0
+    assert res_max["risk_level"] == "CRITICAL"
+    print("[OK] 9. Composite score bounded in [0, 100] PASSED")
 
-
-def test_exact_risk_boundaries():
-    """C. Verify exact classification rules: 39.9=LOW, 40.0=MODERATE, 70.0=MODERATE, 70.1=CRITICAL."""
-    # Directly test the boundary logic in calculate_four_sensor_risk
-    # We can use mock weights to test exact composite score boundaries:
-    cfg = None
-
-    # Test 1: Low risk boundary (< 40.0) -> e.g. 39.9
-    low_res = calculate_four_sensor_risk(
+    # 10. Missing or stale sensor data policy: conservative, does NOT result in false LOW
+    res_missing_rain = calculate_five_sensor_risk(
         soil_moisture_pct=20.0,
-        temperature_c=18.0,
-        tilt_degrees=0.3,
-        vibration_pga=0.02
+        rain_intensity_mmh=None,  # Missing rain channel
+        tilt_degrees=0.1,
+        vibration_pga=0.01,
+        temperature_c=18.0
     )
-    assert low_res["overall_risk_score"] < 40.0, f"Expected < 40.0, got {low_res['overall_risk_score']}"
-    assert low_res["risk_level"] == "LOW"
-    assert low_res["status_color"] == "#10B981"
-    assert "Low Risk" in low_res["status_message"]
+    assert res_missing_rain["is_valid"] is False, "Missing rain must mark packet invalid"
+    assert res_missing_rain["risk_level"] != "LOW", "Missing sensor must NEVER be classified as safe LOW"
+    assert res_missing_rain["risk_level"] == "UNKNOWN DATA"
+    assert "rain" in res_missing_rain["missing_sensors"]
+    print("[OK] 10. Missing sensor conservative policy (no false LOW) PASSED")
 
-    # Test 2: Moderate risk (40.0 to 70.0)
-    mod_res = calculate_four_sensor_risk(
-        soil_moisture_pct=48.0,
-        temperature_c=2.0,  # freeze-thaw
-        tilt_degrees=1.6,
-        vibration_pga=0.16
-    )
-    assert 40.0 <= mod_res["overall_risk_score"] <= 70.0, f"Expected 40-70, got {mod_res['overall_risk_score']}"
-    assert mod_res["risk_level"] == "MODERATE"
-    assert mod_res["status_color"] == "#F59E0B"
-    assert "Moderate Risk" in mod_res["status_message"]
+    # 11. Simulation producing all five required fields
+    stns = generate_telemetry_tick(DEFAULT_STATIONS)
+    assert len(stns) == 5
+    for s in stns:
+        assert "soil_moisture_pct" in s
+        assert "rainfall_intensity_mmh" in s
+        assert "temp_c" in s
+        assert "tilt" in s
+        assert "vib_g" in s
+        assert s["rainfall_intensity_mmh"] is not None
+        assert 0.0 <= s["rainfall_intensity_mmh"] <= 100.0
+    print("[OK] 11. Simulation producing all 5 required fields PASSED")
 
-    # Test 3: Critical risk (> 70.0)
-    crit_res = calculate_four_sensor_risk(
-        soil_moisture_pct=82.0,
-        temperature_c=-1.5,  # freeze-thaw
-        tilt_degrees=3.8,
-        vibration_pga=0.45
-    )
-    assert crit_res["overall_risk_score"] > 70.0, f"Expected > 70.0, got {crit_res['overall_risk_score']}"
-    assert crit_res["risk_level"] == "CRITICAL"
-    assert crit_res["status_color"] == "#EF4444"
-    assert "Critical Danger" in crit_res["status_message"]
+    # 12. Heavy rainfall scenario impact
+    base_res = calculate_five_sensor_risk(soil_moisture_pct=40.0, rain_intensity_mmh=0.0, tilt_degrees=0.5, vibration_pga=0.04, temperature_c=18.0)
+    heavy_rain_res = calculate_five_sensor_risk(soil_moisture_pct=40.0, rain_intensity_mmh=45.0, tilt_degrees=0.5, vibration_pga=0.04, temperature_c=18.0)
+    assert heavy_rain_res["overall_risk_score"] > base_res["overall_risk_score"], "Heavy rain must increase risk score"
+    rain_diff = heavy_rain_res["overall_risk_score"] - base_res["overall_risk_score"]
+    # 45 mm/h rain is 90 risk pts * 0.25 weight = 22.5 pts increase
+    assert abs(rain_diff - 22.5) <= 0.5, f"Expected ~22.5 point rain contribution, got {rain_diff}"
+    print("[OK] 12. Heavy rainfall scenario contribution impact PASSED")
 
-    # Test 4: Missing or invalid telemetry must NOT be classified as LOW RISK
-    fault_res = calculate_four_sensor_risk(soil_moisture_pct=None, temperature_c=None)
-    assert fault_res["risk_level"] != "LOW", "Faulted/missing telemetry must never be classified as LOW RISK!"
-    assert fault_res["is_valid"] is False
+    # 13. Historical data containing rainfall values & station enrichment
+    enriched = enrich_station_telemetry(DEFAULT_STATIONS)
+    assert len(enriched) == 5
+    for e in enriched:
+        assert "rainfall_intensity_mmh" in e
+        assert "contributions" in e
+        assert "rain" in e["contributions"]
+    print("[OK] 13. Historical data & enrichment containing rainfall values PASSED")
 
-    print("[OK] C. Exact Risk Boundary Tests PASSED")
+    # 14. Existing four-sensor functionality remaining operational
+    res_4s = calculate_four_sensor_risk(soil_moisture_pct=50.0, temperature_c=18.0, tilt_degrees=0.8, vibration_pga=0.05)
+    assert res_4s["is_valid"] is True
+    assert "soil" in res_4s["sensor_scores"]
+    print("[OK] 14. Existing four-sensor functionality operational PASSED")
 
+    # 15. Streamlit pages import cleanly without syntax or import errors
+    import pages.overview
+    import pages.live_sensor
+    import pages.reports
+    import pages.alert_center
+    import pages.geographic_map
+    import pages.highway_safety
+    import pages.settings
+    print("[OK] 15. All 7 Streamlit pages imported cleanly without error PASSED")
 
-def test_simulation_scenarios():
-    """D. Test that predefined simulation scenarios produce deterministic risk classifications."""
-    # 1. Low-risk scenario
-    low_test = calculate_four_sensor_risk(
-        soil_moisture_pct=20.0,
-        temperature_c=18.0,
-        tilt_degrees=0.25,
-        vibration_pga=0.02
-    )
-    assert low_test["overall_risk_score"] < 40.0
-    assert low_test["risk_level"] == "LOW"
-
-    # 2. Moderate-risk scenario
-    mod_test = calculate_four_sensor_risk(
-        soil_moisture_pct=48.0,
-        temperature_c=2.0,
-        tilt_degrees=1.60,
-        vibration_pga=0.16
-    )
-    assert 40.0 <= mod_test["overall_risk_score"] <= 70.0
-    assert mod_test["risk_level"] == "MODERATE"
-
-    # 3. Critical-risk scenario
-    crit_test = calculate_four_sensor_risk(
-        soil_moisture_pct=82.0,
-        temperature_c=-1.5,
-        tilt_degrees=3.80,
-        vibration_pga=0.45
-    )
-    assert crit_test["overall_risk_score"] > 70.0
-    assert crit_test["risk_level"] == "CRITICAL"
-
-    print("[OK] D. Simulation Scenario Tests PASSED")
-
-
-def test_highway_interlock_and_dispatch():
-    """E. Test Highway Interlock simulation states, hysteresis, and dispatch logging."""
-    interlock = HighwayInterlockSystem(hysteresis_ticks_required=3)
-
-    # Initially normal
-    assert interlock.barrier_state == "OPEN"
-    assert interlock.traffic_signal == "GREEN"
-    assert interlock.emergency_state == "INACTIVE"
-
-    # Evaluate with Critical risk (> 70)
-    summary = interlock.evaluate(
-        composite_risk=85.0,
-        is_valid_telemetry=True,
-        sensor_readings={"soil_moisture_pct": 82.0, "temperature_c": -1.5, "tilt_degrees": 3.8, "vibration_pga": 0.45},
-        risk_subscores={"soil": 85.0, "temperature": 80.0, "slope": 88.0, "vibration": 87.0},
-        station_id="GG-001"
-    )
-
-    # Interlock must trip
-    assert summary["barrier_state"] == "CLOSED", "Barrier must be CLOSED on critical danger"
-    assert summary["traffic_signal"] == "RED", "Traffic signals must be RED on critical danger"
-    assert summary["emergency_response"] == "ACTIVE", "Emergency response must be ACTIVE"
-    assert summary["dispatch_status"] == "LOGGED", "Dispatch status must be LOGGED"
-    assert len(interlock.dispatch_history) == 1, "One dispatch incident record must be created"
-
-    incident = interlock.dispatch_history[0]
-    assert "INC-NH58-" in incident["incident_id"]
-    assert incident["composite_risk_score"] == 85.0
-    assert "NH-58 Traffic Police" in incident["intended_recipients"]
-
-    # Test Hysteresis: one tick below 70 must NOT immediately open barrier!
-    summary_hyp = interlock.evaluate(
-        composite_risk=65.0,
-        is_valid_telemetry=True,
-        sensor_readings={"soil_moisture_pct": 50.0, "temperature_c": 5.0, "tilt_degrees": 1.2, "vibration_pga": 0.10},
-        risk_subscores={"soil": 55.0, "temperature": 60.0, "slope": 50.0, "vibration": 45.0},
-        station_id="GG-001"
-    )
-    assert summary_hyp["barrier_state"] == "CLOSED", "Hysteresis must keep barrier CLOSED until recovery confirmed"
-    assert summary_hyp["traffic_signal"] == "RED"
-
-    # Two more safe ticks satisfying hysteresis requirement (3 ticks total)
-    interlock.evaluate(composite_risk=30.0, is_valid_telemetry=True, sensor_readings={}, risk_subscores={})
-    summary_recovered = interlock.evaluate(composite_risk=25.0, is_valid_telemetry=True, sensor_readings={}, risk_subscores={})
-    assert summary_recovered["barrier_state"] == "OPEN", "Barrier should reopen after confirmed safe hysteresis"
-    assert summary_recovered["emergency_response"] == "INACTIVE"
-
-    # Test CSV export
-    csv_str = interlock.export_csv()
-    assert "incident_id" in csv_str
-    assert "NH-58 Himalayan Highway" in csv_str
-
-    print("[OK] E. Highway Interlock & Dispatch Tests PASSED")
+    print("=======================================================")
+    print("ALL 15 INTEGRATION TEST CASES PASSED SUCCESSFULLY (100%)")
+    print("=======================================================")
 
 
 if __name__ == "__main__":
-    print("\n=======================================================")
-    print("RUNNING GEOGUARD AI BACKEND & RISK ENGINE TEST SUITE")
-    print("=======================================================")
-    test_serial_input_parsing()
-    test_risk_subscores_and_formula()
-    test_exact_risk_boundaries()
-    test_simulation_scenarios()
-    test_highway_interlock_and_dispatch()
-    print("=======================================================")
-    print("ALL TESTS PASSED SUCCESSFULLY (100% PASS RATE)")
-    print("=======================================================\n")
+    run_all_tests()

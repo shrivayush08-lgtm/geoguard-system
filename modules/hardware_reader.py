@@ -1,3 +1,4 @@
+import math
 import re
 """
 =============================================================================
@@ -146,8 +147,12 @@ class SerialTelemetryGateway:
         """
         Parses and strictly validates incoming serial frame:
         Supports:
-        1. CSV format: soilMoisture,temperature,tiltAngle,vibrationPGA (e.g. 65.5,28.4,4.2,0.18)
-        2. JSON format: {"soilMoisture": 65.5, "temperature": 28.4, ...}
+        1. 5-Field CSV: soilMoisture,temperature,tiltAngle,vibrationPGA,rainIntensity
+           Example: 68.5,24.7,12.4,0.18,22.6
+        2. Legacy 4-Field CSV: soilMoisture,temperature,tiltAngle,vibrationPGA
+           (Marks rain channel as None / UNAVAILABLE without guessing zero)
+        3. JSON payload with 5 or 4 sensor fields
+        4. Arduino Key-Value stream (Soil moisture:, Rain:, Vibration:, Acceleration:)
         """
         line = raw_line.strip()
         if not line:
@@ -159,54 +164,73 @@ class SerialTelemetryGateway:
         if line.startswith("{") and line.endswith("}"):
             try:
                 payload = json.loads(line)
-                soil = float(payload.get("soilMoisture", payload.get("soil_moisture_pct", payload.get("soil_adc", 0.0))))
-                temp = float(payload.get("temperature", payload.get("temperature_c", payload.get("temp_c", 15.0))))
-                tilt = float(payload.get("tiltAngle", payload.get("tilt_degrees", payload.get("tilt", 0.0))))
-                vib = float(payload.get("vibrationPGA", payload.get("vibration_intensity_g", payload.get("vib_g", 0.0))))
-                station_id = str(payload.get("station_id", "GG-001"))
+                raw_soil = float(payload.get("soilMoisture", payload.get("soil_moisture_pct", payload.get("soil_adc", 0.0))))
+                raw_temp = float(payload.get("temperature", payload.get("temperature_c", payload.get("temp_c", 15.0))))
+                raw_tilt = float(payload.get("tiltAngle", payload.get("tilt_degrees", payload.get("tilt", 0.0))))
+                raw_vib = float(payload.get("vibrationPGA", payload.get("vibration_intensity_g", payload.get("vib_g", 0.0))))
+                
+                # 5th sensor: rain intensity
+                raw_rain_val = payload.get("rainIntensity", payload.get("rain_intensity", payload.get("rainfall_intensity_mmh", None)))
+                raw_rain = None
+                if raw_rain_val is not None:
+                    try:
+                        r_float = float(raw_rain_val)
+                        if not (math.isnan(r_float) or math.isinf(r_float) or r_float < 0.0 or r_float > 250.0):
+                            raw_rain = round(r_float, 1)
+                    except (ValueError, TypeError):
+                        raw_rain = None
 
-                soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(soil, temp, tilt, vib)
+                station_id = str(payload.get("station_id", "GG-001"))
+                soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
 
                 return {
                     "station_id": station_id,
                     "soil_moisture_pct": soil_c,
-                    "soil_adc": int(raw_soil),
+                    "soil_adc": int(raw_soil) if raw_soil > 100 else None,
                     "temperature_c": temp_c,
                     "tilt_degrees": tilt_c,
                     "vibration_pga": vib_c,
+                    "rain_intensity_mmh": raw_rain,
+                    "rain_intensity": raw_rain,
                     "timestamp": now_iso,
                     "is_simulated": False,
                     "raw_frame": line,
-                    "is_valid": True
+                    "is_valid": True,
+                    "is_complete": (raw_rain is not None)
                 }
             except (ValueError, KeyError, json.JSONDecodeError):
                 self.malformed_packets_rejected += 1
                 return None
 
-        # Format 2: Key-Value stream (from Arduino receiver sketches)
+        # Format 2: Arduino Key-Value stream (from slope / receiver debug prints)
         line_lower = line.lower()
         if "soil moisture:" in line_lower:
             m = re.search(r"[-+]?\d*\.?\d+", line)
-            if m:
-                self._kv_buffer["soil"] = float(m.group())
+            if m: self._kv_buffer["soil"] = float(m.group())
             return None
         elif "rain:" in line_lower:
             m = re.search(r"[-+]?\d*\.?\d+", line)
-            if m:
-                self._kv_buffer["rain"] = float(m.group())
+            if m: self._kv_buffer["rain"] = float(m.group())
             return None
         elif "vibration:" in line_lower:
             m = re.search(r"[-+]?\d*\.?\d+", line)
-            if m:
-                self._kv_buffer["vib"] = float(m.group())
+            if m: self._kv_buffer["vib"] = float(m.group())
             return None
         elif "acceleration:" in line_lower:
             m = re.search(r"[-+]?\d*\.?\d+", line)
-            if m:
-                self._kv_buffer["accel"] = float(m.group())
+            if m: self._kv_buffer["accel"] = float(m.group())
+            return None
         elif "status:" in line_lower or "-----" in line:
             if "soil" in self._kv_buffer and ("accel" in self._kv_buffer or "vib" in self._kv_buffer):
                 raw_soil = float(self._kv_buffer.get("soil", 1500.0))
+                raw_rain_adc = self._kv_buffer.get("rain", 0.0)
+                # Map raw rain ADC (ESP32) or rate to mm/hr
+                if raw_rain_adc > 100.0:
+                    # Inverted/scaled optical rain sensor: lower ADC = more rain or direct
+                    rain_mmh = round(max(0.0, min(50.0, ((4095.0 - raw_rain_adc) / 2995.0) * 50.0)), 1)
+                else:
+                    rain_mmh = round(float(raw_rain_adc), 1)
+
                 raw_temp = 22.0
                 raw_tilt = 0.5
                 raw_vib = float(self._kv_buffer.get("accel", self._kv_buffer.get("vib", 0.08)))
@@ -215,85 +239,122 @@ class SerialTelemetryGateway:
                 return {
                     "station_id": "GG-001",
                     "soil_moisture_pct": soil_c,
-                    "soil_adc": int(raw_soil),
+                    "soil_adc": int(raw_soil) if raw_soil > 100 else None,
                     "temperature_c": temp_c,
                     "tilt_degrees": tilt_c,
                     "vibration_pga": vib_c,
+                    "rain_intensity_mmh": rain_mmh,
+                    "rain_intensity": rain_mmh,
                     "timestamp": now_iso,
                     "is_simulated": False,
                     "raw_frame": line,
-                    "is_valid": True
+                    "is_valid": True,
+                    "is_complete": True
                 }
             return None
 
-        # Format 3: Expected CSV strings (4-value, 5-value, or GEOGUARD-prefixed)
+        # Format 3: Comma-Separated Values (5-field or Legacy 4-field)
         raw_tokens = [t.strip() for t in line.split(",") if t.strip()]
         if raw_tokens and raw_tokens[0].upper() == "GEOGUARD":
             tokens = raw_tokens[1:]
         else:
             tokens = raw_tokens
 
+        # Check for 5-field packet: soilMoisture,temperature,tiltAngle,vibrationPGA,rainIntensity
         if len(tokens) == 5:
             try:
                 raw_soil = float(tokens[0])
-                raw_temp = 22.0
-                raw_tilt = 0.5
+                raw_temp = float(tokens[1])
+                raw_tilt = float(tokens[2])
                 raw_vib = float(tokens[3])
+                raw_rain_val = float(tokens[4])
+
+                # Validation of physical bounds & numeric sanity
+                if math.isnan(raw_soil) or math.isinf(raw_soil):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_temp) or math.isinf(raw_temp) or not (-50.0 <= raw_temp <= 85.0):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_tilt) or math.isinf(raw_tilt) or not (-180.0 <= raw_tilt <= 180.0):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_vib) or math.isinf(raw_vib) or not (0.0 <= raw_vib <= 10.0):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_rain_val) or math.isinf(raw_rain_val) or raw_rain_val < 0.0 or raw_rain_val > 250.0:
+                    self.malformed_packets_rejected += 1
+                    return None
+
                 soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
+                calibrated_rain = round(raw_rain_val, 1)
+
                 return {
                     "station_id": "GG-001",
                     "soil_moisture_pct": soil_c,
-                    "soil_adc": int(raw_soil),
+                    "soil_adc": int(raw_soil) if raw_soil > 100 else None,
                     "temperature_c": temp_c,
                     "tilt_degrees": tilt_c,
                     "vibration_pga": vib_c,
+                    "rain_intensity_mmh": calibrated_rain,
+                    "rain_intensity": calibrated_rain,
                     "timestamp": now_iso,
                     "is_simulated": False,
                     "raw_frame": line,
-                    "is_valid": True
+                    "is_valid": True,
+                    "is_complete": True
                 }
             except ValueError:
                 self.malformed_packets_rejected += 1
                 return None
 
-        if len(tokens) != 4:
-            self.malformed_packets_rejected += 1
-            return None
+        # Check for Legacy 4-field packet: soilMoisture,temperature,tiltAngle,vibrationPGA
+        if len(tokens) == 4:
+            try:
+                raw_soil = float(tokens[0])
+                raw_temp = float(tokens[1])
+                raw_tilt = float(tokens[2])
+                raw_vib = float(tokens[3])
 
-        try:
-            raw_soil = float(tokens[0])
-            raw_temp = float(tokens[1])
-            raw_tilt = float(tokens[2])
-            raw_vib = float(tokens[3])
+                if math.isnan(raw_soil) or math.isinf(raw_soil):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_temp) or math.isinf(raw_temp) or not (-50.0 <= raw_temp <= 85.0):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_tilt) or math.isinf(raw_tilt) or not (-180.0 <= raw_tilt <= 180.0):
+                    self.malformed_packets_rejected += 1
+                    return None
+                if math.isnan(raw_vib) or math.isinf(raw_vib) or not (0.0 <= raw_vib <= 10.0):
+                    self.malformed_packets_rejected += 1
+                    return None
 
-            # Range bounds check (sanity validation)
-            if not (-50.0 <= raw_temp <= 85.0):
+                soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
+
+                # Legacy 4-field packet: mark rain_intensity_mmh as None (Unavailable), not 0.0!
+                return {
+                    "station_id": "GG-001",
+                    "soil_moisture_pct": soil_c,
+                    "soil_adc": int(raw_soil) if raw_soil > 100 else None,
+                    "temperature_c": temp_c,
+                    "tilt_degrees": tilt_c,
+                    "vibration_pga": vib_c,
+                    "rain_intensity_mmh": None,
+                    "rain_intensity": None,
+                    "timestamp": now_iso,
+                    "is_simulated": False,
+                    "raw_frame": line,
+                    "is_valid": True,
+                    "is_complete": False,
+                    "data_quality": "PARTIAL"
+                }
+            except ValueError:
                 self.malformed_packets_rejected += 1
                 return None
-            if not (-180.0 <= raw_tilt <= 180.0):
-                self.malformed_packets_rejected += 1
-                return None
-            if not (0.0 <= raw_vib <= 10.0):
-                self.malformed_packets_rejected += 1
-                return None
 
-            soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
-
-            return {
-                "station_id": "GG-001",
-                "soil_moisture_pct": soil_c,
-                "soil_adc": int(raw_soil),
-                "temperature_c": temp_c,
-                "tilt_degrees": tilt_c,
-                "vibration_pga": vib_c,
-                "timestamp": now_iso,
-                "is_simulated": False,
-                "raw_frame": line,
-                "is_valid": True
-            }
-        except ValueError:
-            self.malformed_packets_rejected += 1
-            return None
+        # Any other token count is invalid
+        self.malformed_packets_rejected += 1
+        return None
 
     def read_latest_packet(self) -> Optional[Dict[str, Any]]:
         """

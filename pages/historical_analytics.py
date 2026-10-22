@@ -61,7 +61,7 @@ def render_historical_analytics_page(enriched_stations):
         yaxis=dict(title="Soil Saturation (% VWC)", gridcolor="#1B2F4C"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    st.plotly_chart(fig_comp, use_container_width=True)
+    st.plotly_chart(fig_comp, use_container_width=True, key="hist_soil_comp_chart")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -85,7 +85,7 @@ def render_historical_analytics_page(enriched_stations):
             yaxis=dict(title="Tilt Angle (Degrees)", gridcolor="#1B2F4C"),
             showlegend=False
         )
-        st.plotly_chart(fig_tilt, use_container_width=True)
+        st.plotly_chart(fig_tilt, use_container_width=True, key="hist_tilt_comp_chart")
 
     with c2:
         st.markdown("### Antecedent 24h Precipitation Accumulation (mm)")
@@ -104,7 +104,7 @@ def render_historical_analytics_page(enriched_stations):
             yaxis=dict(title="Cumulative Rain (mm)", gridcolor="#1B2F4C"),
             showlegend=False
         )
-        st.plotly_chart(fig_rain, use_container_width=True)
+        st.plotly_chart(fig_rain, use_container_width=True, key="hist_rain_comp_chart")
 
     st.markdown("<hr style='border:0; border-top:1px solid #1B2F4C; margin: 18px 0;'>", unsafe_allow_html=True)
 
@@ -134,5 +134,5 @@ def render_historical_analytics_page(enriched_stations):
         height=320,
         margin=dict(l=20, r=20, t=20, b=20)
     )
-    st.plotly_chart(fig_corr, use_container_width=True)
+    st.plotly_chart(fig_corr, use_container_width=True, key="hist_corr_heat_chart")
     st.caption("Pearson correlation indicates geotechnical coupling between precipitation saturation and accelerated slope creep.")

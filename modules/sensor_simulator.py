@@ -21,11 +21,11 @@ from database.db import get_connection, log_telemetry
 
 # Initial default station coordinates and environmental baselines (NH-58 Himalayan Corridor)
 DEFAULT_STATIONS = [
-    {"id": "GG-001", "name": "NH-58 Mountain Pass", "corridor": "NH-58 km 42 (Byasi Gorge)", "lat": 30.1234, "lon": 78.4321, "soil_adc": 2100, "rain_adc": 2300, "tilt": 0.35, "vib": False, "acc_rain": 14.5, "temp_c": 11.2},
-    {"id": "GG-002", "name": "Valley Gorge Sector A", "corridor": "NH-58 km 58 (Kaudiyala)", "lat": 30.1567, "lon": 78.4890, "soil_adc": 1850, "rain_adc": 2050, "tilt": 0.22, "vib": False, "acc_rain": 9.2, "temp_c": 13.8},
-    {"id": "GG-003", "name": "Ridge Tunnel Link", "corridor": "NH-58 km 71 (Devprayag Confluence)", "lat": 30.2012, "lon": 78.5123, "soil_adc": 2350, "rain_adc": 2550, "tilt": 0.48, "vib": False, "acc_rain": 22.0, "temp_c": 8.4},
-    {"id": "GG-004", "name": "Highland Slope North", "corridor": "NH-58 km 89 (Kirtinagar Bluffs)", "lat": 30.2456, "lon": 78.5678, "soil_adc": 1980, "rain_adc": 2150, "tilt": 0.28, "vib": False, "acc_rain": 11.8, "temp_c": 10.6},
-    {"id": "GG-005", "name": "Alaknanda Escarpment", "corridor": "NH-58 km 105 (Srinagar Approach)", "lat": 30.2810, "lon": 78.6140, "soil_adc": 1720, "rain_adc": 1900, "tilt": 0.18, "vib": False, "acc_rain": 6.4, "temp_c": 15.2}
+    {"id": "GG-001", "name": "NH-58 Mountain Pass", "corridor": "NH-58 km 42 (Byasi Gorge)", "lat": 30.1234, "lon": 78.4321, "soil_adc": 2100, "soil_moisture_pct": 38.5, "rain_adc": 2300, "rainfall_intensity_mmh": 6.0, "rain_intensity": 6.0, "tilt": 0.35, "vib": False, "acc_rain": 14.5, "temp_c": 11.2},
+    {"id": "GG-002", "name": "Valley Gorge Sector A", "corridor": "NH-58 km 58 (Kaudiyala)", "lat": 30.1567, "lon": 78.4890, "soil_adc": 1850, "soil_moisture_pct": 28.8, "rain_adc": 2050, "rainfall_intensity_mmh": 3.0, "rain_intensity": 3.0, "tilt": 0.22, "vib": False, "acc_rain": 9.2, "temp_c": 13.8},
+    {"id": "GG-003", "name": "Ridge Tunnel Link", "corridor": "NH-58 km 71 (Devprayag Confluence)", "lat": 30.2012, "lon": 78.5123, "soil_adc": 2350, "soil_moisture_pct": 48.0, "rain_adc": 2550, "rainfall_intensity_mmh": 9.0, "rain_intensity": 9.0, "tilt": 0.48, "vib": False, "acc_rain": 22.0, "temp_c": 8.4},
+    {"id": "GG-004", "name": "Highland Slope North", "corridor": "NH-58 km 89 (Kirtinagar Bluffs)", "lat": 30.2456, "lon": 78.5678, "soil_adc": 1980, "soil_moisture_pct": 33.8, "rain_adc": 2150, "rainfall_intensity_mmh": 4.2, "rain_intensity": 4.2, "tilt": 0.28, "vib": False, "acc_rain": 11.8, "temp_c": 10.6},
+    {"id": "GG-005", "name": "Alaknanda Escarpment", "corridor": "NH-58 km 105 (Srinagar Approach)", "lat": 30.2810, "lon": 78.6140, "soil_adc": 1720, "soil_moisture_pct": 23.8, "rain_adc": 1900, "rainfall_intensity_mmh": 1.2, "rain_intensity": 1.2, "tilt": 0.18, "vib": False, "acc_rain": 6.4, "temp_c": 15.2}
 ]
 
 def adc_to_moisture_pct(adc):
