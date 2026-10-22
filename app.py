@@ -163,6 +163,8 @@ elif st.session_state.operating_mode == "HARDWARE":
             for s in st.session_state.stations_telemetry:
                 if s["id"] == stn_id:
                     s["soil_moisture_pct"] = packet.get("soil_moisture_pct", s.get("soil_moisture_pct", 35.0))
+                    if "soil_adc" in packet:
+                        s["soil_adc"] = packet["soil_adc"]
                     s["temp_c"] = packet.get("temperature_c", s.get("temp_c", 15.0))
                     s["temperature_c"] = s["temp_c"]
                     s["tilt"] = packet.get("tilt_degrees", s.get("tilt", 0.3))

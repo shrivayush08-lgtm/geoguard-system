@@ -131,12 +131,8 @@ class SerialTelemetryGateway:
 
         # If reading is in ADC range (e.g. 500 - 4095), convert to % VWC
         if self.raw_adc_mode or raw_soil > 100.0:
-            dry = float(self.adc_dry_baseline)
-            wet = float(self.adc_wet_baseline)
-            if dry > wet:
-                pct = ((dry - raw_soil) / max(1.0, dry - wet)) * 100.0
-            else:
-                pct = ((raw_soil - dry) / max(1.0, wet - dry)) * 100.0
+            # ESP32 12-bit ADC (0 - 4095): air ~ 4095 (0% VWC), water/wet soil ~ 1100 (100% VWC)
+            pct = ((4095.0 - raw_soil) / 2995.0) * 100.0
             calibrated_soil = max(0.0, min(100.0, pct))
 
         return (
@@ -174,6 +170,7 @@ class SerialTelemetryGateway:
                 return {
                     "station_id": station_id,
                     "soil_moisture_pct": soil_c,
+                    "soil_adc": int(raw_soil),
                     "temperature_c": temp_c,
                     "tilt_degrees": tilt_c,
                     "vibration_pga": vib_c,
@@ -218,6 +215,7 @@ class SerialTelemetryGateway:
                 return {
                     "station_id": "GG-001",
                     "soil_moisture_pct": soil_c,
+                    "soil_adc": int(raw_soil),
                     "temperature_c": temp_c,
                     "tilt_degrees": tilt_c,
                     "vibration_pga": vib_c,
@@ -245,6 +243,7 @@ class SerialTelemetryGateway:
                 return {
                     "station_id": "GG-001",
                     "soil_moisture_pct": soil_c,
+                    "soil_adc": int(raw_soil),
                     "temperature_c": temp_c,
                     "tilt_degrees": tilt_c,
                     "vibration_pga": vib_c,
@@ -283,6 +282,7 @@ class SerialTelemetryGateway:
             return {
                 "station_id": "GG-001",
                 "soil_moisture_pct": soil_c,
+                "soil_adc": int(raw_soil),
                 "temperature_c": temp_c,
                 "tilt_degrees": tilt_c,
                 "vibration_pga": vib_c,

@@ -332,7 +332,7 @@ def render_live_sensor_page(enriched_stations):
                 Calibrated Pore Saturation
             </div>
             """)
-            st.plotly_chart(render_sparkline_chart(spark_soil, color_hex=s_color, height=52), use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(render_sparkline_chart(spark_soil, color_hex=s_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_soil_chart')
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
                 <span>Pore Pressure Risk:</span>
@@ -360,7 +360,7 @@ def render_live_sensor_page(enriched_stations):
                 {"Freeze-Thaw Fissure Zone" if -4.0 <= temp_c <= 4.0 else "Thermal Gradient: Stable"}
             </div>
             """)
-            st.plotly_chart(render_sparkline_chart(spark_temp, color_hex=t_color, height=52), use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(render_sparkline_chart(spark_temp, color_hex=t_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_temp_chart')
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
                 <span>Thermal Wedge Risk:</span>
@@ -388,7 +388,7 @@ def render_live_sensor_page(enriched_stations):
                 Creep Rate: <b>{tilt_rate:+.2f}°/hour</b>
             </div>
             """)
-            st.plotly_chart(render_sparkline_chart(spark_tilt, color_hex=sl_color, height=52), use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(render_sparkline_chart(spark_tilt, color_hex=sl_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_tilt_chart')
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
                 <span>Shear Slip Risk:</span>
@@ -416,7 +416,7 @@ def render_live_sensor_page(enriched_stations):
                 {"Seismic Tremor Active" if vib_detected else "Seismic Floor: Ambient"}
             </div>
             """)
-            st.plotly_chart(render_sparkline_chart(spark_vib, color_hex=v_color, height=52), use_container_width=True, config={'displayModeBar': False})
+            st.plotly_chart(render_sparkline_chart(spark_vib, color_hex=v_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_vib_chart')
             render_html(f"""
             <div style='display: flex; justify-content: space-between; font-size: 11px; font-family: "JetBrains Mono", monospace; color: #94A3B8; border-top: 1px solid #1F2937; padding-top: 4px;'>
                 <span>Seismic Shock Risk:</span>
@@ -436,7 +436,7 @@ def render_live_sensor_page(enriched_stations):
 
     with gauge_col:
         gauge_fig = build_four_sensor_risk_gauge(overall_score, risk_level, status_color, height=275)
-        st.plotly_chart(gauge_fig, use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(gauge_fig, use_container_width=True, config={'displayModeBar': False}, key='live_risk_gauge_chart')
 
     with desc_col:
         render_html(f"""
@@ -676,7 +676,7 @@ def render_live_sensor_page(enriched_stations):
             ))
             fig_soil.add_hline(y=70.0, line_dash="dash", line_color="#EF4444", annotation_text="Saturation Limit (70%)", annotation_font_color="#EF4444")
             fig_soil.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_soil, use_container_width=True)
+            st.plotly_chart(fig_soil, use_container_width=True, key='history_soil_chart')
 
         with chart_r1_c2:
             st.markdown("#### 2. Temperature vs Time (°C)")
@@ -691,7 +691,7 @@ def render_live_sensor_page(enriched_stations):
             ))
             fig_temp.add_hrect(y0=-4.0, y1=4.0, line_width=0, fillcolor="rgba(239, 68, 68, 0.15)", annotation_text="Freeze-Thaw Fissure Zone (-4°C to +4°C)", annotation_font_color="#EF4444")
             fig_temp.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_temp, use_container_width=True)
+            st.plotly_chart(fig_temp, use_container_width=True, key='history_temp_chart')
 
         chart_r2_c1, chart_r2_c2 = st.columns(2)
         with chart_r2_c1:
@@ -708,7 +708,7 @@ def render_live_sensor_page(enriched_stations):
             ))
             fig_tilt.add_hline(y=2.0, line_dash="dash", line_color="#EF4444", annotation_text="Critical Shear Limit (2.0°)", annotation_font_color="#EF4444")
             fig_tilt.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_tilt, use_container_width=True)
+            st.plotly_chart(fig_tilt, use_container_width=True, key='history_tilt_chart')
 
         with chart_r2_c2:
             st.markdown("#### 4. Vibration PGA vs Time (g)")
@@ -722,7 +722,7 @@ def render_live_sensor_page(enriched_stations):
             ))
             fig_vib.add_hline(y=0.35, line_dash="dash", line_color="#EF4444", annotation_text="Seismic Shock Limit (0.35g)", annotation_font_color="#EF4444")
             fig_vib.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
-            st.plotly_chart(fig_vib, use_container_width=True)
+            st.plotly_chart(fig_vib, use_container_width=True, key='history_vib_chart')
 
         # 5th Chart: Composite Landslide Risk Score with 40 and 70 reference lines
         st.markdown("#### 5. Composite Landslide Risk Index vs Time")
@@ -768,7 +768,7 @@ def render_live_sensor_page(enriched_stations):
             yaxis=dict(title="Risk Score (0–100)", range=[0, 105], showgrid=True, gridcolor="#1F2937"),
             margin=dict(l=10, r=10, t=30, b=10)
         )
-        st.plotly_chart(fig_comp, use_container_width=True)
+        st.plotly_chart(fig_comp, use_container_width=True, key='history_comp_chart')
 
     # -------------------------------------------------------------------------
     # 13. Scientific Notice
