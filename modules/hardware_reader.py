@@ -1,3 +1,4 @@
+import re
 """
 =============================================================================
 GEOGUARD AI — OFF-GRID HIGHWAY LANDSLIDE EARLY WARNING & INTERLOCK SYSTEM
@@ -69,6 +70,7 @@ class SerialTelemetryGateway:
         self.raw_adc_mode: bool = False
         self.adc_dry_baseline: int = 1100
         self.adc_wet_baseline: int = 3700
+        self._kv_buffer: Dict[str, Any] = {}
 
     @staticmethod
     def list_available_ports() -> List[str]:
@@ -180,8 +182,77 @@ class SerialTelemetryGateway:
                 self.malformed_packets_rejected += 1
                 return None
 
-        # Format 2: Expected CSV 4-value string: soilMoisture,temperature,tiltAngle,vibrationPGA
-        tokens = [t.strip() for t in line.split(",") if t.strip()]
+        # Format 2: Key-Value stream (from Arduino receiver sketches)
+        line_lower = line.lower()
+        if "soil moisture:" in line_lower:
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if m:
+                self._kv_buffer["soil"] = float(m.group())
+            return None
+        elif "rain:" in line_lower:
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if m:
+                self._kv_buffer["rain"] = float(m.group())
+            return None
+        elif "vibration:" in line_lower:
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if m:
+                self._kv_buffer["vib"] = float(m.group())
+            return None
+        elif "acceleration:" in line_lower:
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if m:
+                self._kv_buffer["accel"] = float(m.group())
+        elif "status:" in line_lower or "-----" in line:
+            if "soil" in self._kv_buffer and ("accel" in self._kv_buffer or "vib" in self._kv_buffer):
+                raw_soil = float(self._kv_buffer.get("soil", 1500.0))
+                raw_temp = 22.0
+                raw_tilt = 0.5
+                raw_vib = float(self._kv_buffer.get("accel", self._kv_buffer.get("vib", 0.08)))
+                self._kv_buffer.clear()
+                soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
+                return {
+                    "station_id": "GG-001",
+                    "soil_moisture_pct": soil_c,
+                    "temperature_c": temp_c,
+                    "tilt_degrees": tilt_c,
+                    "vibration_pga": vib_c,
+                    "timestamp": now_iso,
+                    "is_simulated": False,
+                    "raw_frame": line,
+                    "is_valid": True
+                }
+            return None
+
+        # Format 3: Expected CSV strings (4-value, 5-value, or GEOGUARD-prefixed)
+        raw_tokens = [t.strip() for t in line.split(",") if t.strip()]
+        if raw_tokens and raw_tokens[0].upper() == "GEOGUARD":
+            tokens = raw_tokens[1:]
+        else:
+            tokens = raw_tokens
+
+        if len(tokens) == 5:
+            try:
+                raw_soil = float(tokens[0])
+                raw_temp = 22.0
+                raw_tilt = 0.5
+                raw_vib = float(tokens[3])
+                soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
+                return {
+                    "station_id": "GG-001",
+                    "soil_moisture_pct": soil_c,
+                    "temperature_c": temp_c,
+                    "tilt_degrees": tilt_c,
+                    "vibration_pga": vib_c,
+                    "timestamp": now_iso,
+                    "is_simulated": False,
+                    "raw_frame": line,
+                    "is_valid": True
+                }
+            except ValueError:
+                self.malformed_packets_rejected += 1
+                return None
+
         if len(tokens) != 4:
             self.malformed_packets_rejected += 1
             return None
