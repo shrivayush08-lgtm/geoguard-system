@@ -216,12 +216,20 @@ class SerialTelemetryGateway:
             m = re.search(r"[-+]?\d*\.?\d+", line)
             if m: self._kv_buffer["vib"] = float(m.group())
             return None
+        elif "tilt:" in line_lower:
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if m: self._kv_buffer["tilt"] = float(m.group())
+            return None
+        elif "temperature:" in line_lower or "temp:" in line_lower:
+            m = re.search(r"[-+]?\d*\.?\d+", line)
+            if m: self._kv_buffer["temp"] = float(m.group())
+            return None
         elif "acceleration:" in line_lower:
             m = re.search(r"[-+]?\d*\.?\d+", line)
             if m: self._kv_buffer["accel"] = float(m.group())
             return None
         elif "status:" in line_lower or "-----" in line:
-            if "soil" in self._kv_buffer and ("accel" in self._kv_buffer or "vib" in self._kv_buffer):
+            if "soil" in self._kv_buffer and ("accel" in self._kv_buffer or "vib" in self._kv_buffer or "tilt" in self._kv_buffer):
                 raw_soil = float(self._kv_buffer.get("soil", 1500.0))
                 raw_rain_adc = self._kv_buffer.get("rain", 0.0)
                 # Map raw rain ADC (ESP32) or rate to mm/hr
@@ -231,8 +239,8 @@ class SerialTelemetryGateway:
                 else:
                     rain_mmh = round(float(raw_rain_adc), 1)
 
-                raw_temp = 22.0
-                raw_tilt = 0.5
+                raw_temp = float(self._kv_buffer.get("temp", 22.0))
+                raw_tilt = float(self._kv_buffer.get("tilt", 0.5))
                 raw_vib = float(self._kv_buffer.get("accel", self._kv_buffer.get("vib", 0.08)))
                 self._kv_buffer.clear()
                 soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
