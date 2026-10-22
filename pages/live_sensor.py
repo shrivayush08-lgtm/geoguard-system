@@ -227,8 +227,9 @@ def render_live_sensor_page(enriched_stations):
     # -------------------------------------------------------------------------
     # 4. Automatic Landslide Risk Assessment
     # -------------------------------------------------------------------------
-    raw_rain_obj = target_stn.get("rain_intensity", target_stn.get("rainfall_intensity_mmh"))
+    raw_rain_obj = current_stn.get("rain_intensity", current_stn.get("rainfall_intensity_mmh"))
     rain_mmh = float(raw_rain_obj) if raw_rain_obj is not None else None
+    rain_mmh_val = float(rain_mmh) if rain_mmh is not None else 0.0
 
     risk_res = calculate_five_sensor_risk(
         soil_moisture_pct=soil_pct,
@@ -306,16 +307,19 @@ def render_live_sensor_page(enriched_stations):
 
     if not hist_df.empty:
         spark_soil = hist_df["soil_moisture_pct"].tail(20).tolist()
-        spark_temp = hist_df["temperature_c"].tail(20).tolist() if "temperature_c" in hist_df.columns else [temp_c] * 15
+        r_hist_col = "rainfall_intensity_mmh" if "rainfall_intensity_mmh" in hist_df.columns else "rain_intensity"
+        spark_rain = hist_df[r_hist_col].tail(20).tolist() if r_hist_col in hist_df.columns else [rain_mmh_val] * 15
         spark_tilt = hist_df["tilt_degrees"].tail(20).tolist()
         spark_vib = hist_df["vibration_intensity_g"].tail(20).tolist()
+        spark_temp = hist_df["temperature_c"].tail(20).tolist() if "temperature_c" in hist_df.columns else [temp_c] * 15
     else:
         spark_soil = [soil_pct] * 10
-        spark_temp = [temp_c] * 10
+        spark_rain = [rain_mmh_val] * 10
         spark_tilt = [tilt_deg] * 10
         spark_vib = [vib_g] * 10
+        spark_temp = [temp_c] * 10
 
-    card_c1, card_c2, card_c3, card_c4 = st.columns(4)
+    card_c1, card_c2, card_c3, card_c4, card_c5 = st.columns(5)
 
     # CARD 1: Soil Moisture Sensor (Weight: 25%)
     with card_c1:
@@ -499,7 +503,7 @@ def render_live_sensor_page(enriched_stations):
         </div>
         """)
 
-        weights_dict = target_stn.get("weights", {"soil": 0.25, "rain": 0.25, "slope": 0.25, "vibration": 0.15, "temperature": 0.10})
+        weights_dict = current_stn.get("weights", {"soil": 0.25, "rain": 0.25, "slope": 0.25, "vibration": 0.15, "temperature": 0.10})
         w_soil = weights_dict.get("soil", 0.25)
         w_rain = weights_dict.get("rain", 0.25)
         w_slope = weights_dict.get("slope", 0.25)
@@ -530,7 +534,7 @@ def render_live_sensor_page(enriched_stations):
                 </div>
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
-                        <span>🌧️ Rain Intensity ({rain_mmh_val:.1f} mm/h):</span>
+                        <span>🌧️ Rain Intensity ({f"{rain_mmh:.1f} mm/h" if rain_mmh is not None else "UNAVAILABLE"}):</span>
                         <b>{rain_risk:.1f}/100 | W: {w_rain*100:.0f}% | +{c_rain:.1f} pts</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>

@@ -198,15 +198,6 @@ def render_risk_intelligence_page(enriched_stations):
             </div>
         </div>
         """, unsafe_allow_html=True)
-                {''.join([f"<div style='font-size:13px; color:#E2E8F0; margin-bottom:6px; display:flex; align-items:center; gap:8px;'><span style='color:#00F0FF;'>▸</span> {f}</div>" for f in current_stn.get('factors', [])])}
-            </div>
-            <hr style='border:0; border-top:1px solid #1B2F4C; margin:12px 0;'>
-            <div style='font-size:12px; color:#8B9BB4; line-height:1.5;'>
-                <b>Recommended Mitigation Action:</b><br>
-                <span style='color:{current_stn["status_color"]}; font-weight:600;'>{current_stn.get("recommended_action")}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
 
     st.markdown("<hr style='border:0; border-top:1px solid #1B2F4C; margin: 18px 0;'>", unsafe_allow_html=True)
 
