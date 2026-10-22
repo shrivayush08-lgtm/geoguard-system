@@ -79,6 +79,13 @@ from modules.gps_reader import GPSHardwareGateway # Modular real GPS telemetry g
 # ---------------------------------------------------------------------------
 # SECTION 2: Page View Renderers (Streamlined 7 Core Operational Pages)
 # ---------------------------------------------------------------------------
+import importlib
+import pages.live_sensor
+try:
+    importlib.reload(pages.live_sensor)
+except Exception:
+    pass
+
 from pages.overview import render_overview_page             # 1. Overview Dashboard
 from pages.live_sensor import render_live_sensor_page       # 2. Live Sensor Monitoring & Interlock Center
 from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map & Live GPS Assets
