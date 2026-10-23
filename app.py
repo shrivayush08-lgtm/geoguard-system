@@ -125,9 +125,9 @@ if 'gps_units' not in st.session_state:
 if 'operating_mode' not in st.session_state:
     st.session_state.operating_mode = "SIMULATION"
 
-if 'serial_gateway' not in st.session_state:
+if 'serial_gateway' not in st.session_state or not hasattr(st.session_state.serial_gateway, 'auto_detect_esp32'):
     st.session_state.serial_gateway = SerialTelemetryGateway(default_port="COM3", default_baud=115200)
-    init_port, _ = st.session_state.serial_gateway.auto_detect_esp32()
+    init_port, _ = SerialTelemetryGateway.auto_detect_esp32()
     if init_port:
         st.session_state.serial_gateway.port = init_port
 
