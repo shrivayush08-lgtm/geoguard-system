@@ -127,6 +127,9 @@ if 'operating_mode' not in st.session_state:
 
 if 'serial_gateway' not in st.session_state:
     st.session_state.serial_gateway = SerialTelemetryGateway(default_port="COM3", default_baud=115200)
+    init_port, _ = st.session_state.serial_gateway.auto_detect_esp32()
+    if init_port:
+        st.session_state.serial_gateway.port = init_port
 
 if 'gps_gateway' not in st.session_state:
     st.session_state.gps_gateway = GPSHardwareGateway()
@@ -163,6 +166,15 @@ if st.session_state.operating_mode == "SIMULATION":
 elif st.session_state.operating_mode == "HARDWARE":
     # 1. Read fixed geotechnical station packet via USB serial (CSV or JSON)
     gw = st.session_state.serial_gateway
+    if not gw.is_connected and st.session_state.get("auto_detect_esp", True):
+        # Auto-detect and connect to ESP32 on whatever USB port it is plugged into
+        now_ts = time.time()
+        if now_ts - getattr(gw, "last_auto_scan_time", 0.0) > 2.5:
+            gw.last_auto_scan_time = now_ts
+            detected_p, _ = gw.auto_detect_esp32()
+            if detected_p:
+                gw.connect(detected_p, getattr(gw, "baud", 115200))
+
     if gw.is_connected:
         packet = gw.read_latest_packet()
         if packet:
@@ -377,24 +389,72 @@ with st.sidebar:
 
     else:
         # Hardware Serial Receiver Management Console
-        st.markdown("<div class='hud-eyebrow'>ESP32 SERIAL INTERFACE</div>", unsafe_allow_html=True)
+        st.markdown("<div class='hud-eyebrow'>ESP32 HARDWARE INTERFACE</div>", unsafe_allow_html=True)
         gw = st.session_state.serial_gateway
-        avail_ports = gw.list_available_ports()
-        port_choices = avail_ports if avail_ports else ["COM3", "COM4", "/dev/ttyUSB0"]
-        default_port_idx = port_choices.index("COM19") if "COM19" in port_choices else 0
 
-        selected_port = st.selectbox("Serial Port", port_choices, index=default_port_idx)
+        # Auto-detect ESP32 on any USB port
+        detected_port, detected_desc = gw.auto_detect_esp32()
+        candidates = gw.get_port_candidates()
+
+        # Visual Auto-Detection Callout
+        if detected_port:
+            st.markdown(
+                f"<div style='background:rgba(16,185,129,0.12); border:1px solid #10B981; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
+                f"<div style='font-size:11px; font-weight:700; color:#10B981;'>⚡ ESP32 AUTO-DETECTED</div>"
+                f"<div style='font-size:13px; font-weight:600; color:#F3F4F6;'>Port: <code>{detected_port}</code></div>"
+                f"<div style='font-size:10px; color:#9CA3AF;'>{detected_desc}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                "<div style='background:rgba(245,158,11,0.12); border:1px solid #F59E0B; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
+                "<div style='font-size:11px; font-weight:700; color:#F59E0B;'>⚠️ NO ESP32 DETECTED</div>"
+                "<div style='font-size:10px; color:#9CA3AF;'>Plug ESP32 into any USB port to auto-connect.</div>"
+                "</div>",
+                unsafe_allow_html=True
+            )
+
+        st.checkbox(
+            "⚡ Auto-Detect & Connect to Any Port",
+            value=st.session_state.get("auto_detect_esp", True),
+            key="auto_detect_esp",
+            help="Automatically detects which USB port your ESP32 is plugged into and establishes live telemetry."
+        )
+
+        # Build clean port choice labels
+        if candidates:
+            port_labels = [c["label"] for c in candidates]
+            if detected_port:
+                default_port_idx = next((i for i, c in enumerate(candidates) if c["device"] == detected_port), 0)
+            elif gw.is_connected:
+                default_port_idx = next((i for i, c in enumerate(candidates) if c["device"] == gw.port), 0)
+            else:
+                default_port_idx = 0
+        else:
+            avail_ports = gw.list_available_ports()
+            port_labels = avail_ports if avail_ports else ["COM19", "COM3", "COM4", "/dev/ttyUSB0"]
+            default_port_idx = 0
+
+        selected_label = st.selectbox("Serial Port (Auto-Ranked)", port_labels, index=default_port_idx)
+        selected_port = selected_label.split()[0].strip() if " " in selected_label else selected_label.strip()
         selected_baud = st.selectbox("Baud Rate", [9600, 19200, 38400, 57600, 115200], index=4)
 
         if not gw.is_connected:
-            if st.button("🔌 Connect Receiver", type="primary", use_container_width=True):
-                success, msg = gw.connect(selected_port, selected_baud)
+            btn_label = f"⚡ Connect ESP32 ({detected_port})" if detected_port else "🔌 Connect Receiver"
+            if st.button(btn_label, type="primary", use_container_width=True):
+                target_port = detected_port if detected_port else selected_port
+                success, msg = gw.connect(target_port, selected_baud)
                 if success:
-                    st.toast(f"Connected to {selected_port}!", icon="🔌")
+                    st.toast(f"Connected to {target_port}!", icon="🔌")
                 else:
                     st.error(msg)
                 st.rerun()
         else:
+            st.markdown(
+                f"<div style='font-size:12px; color:#10B981; margin-bottom:6px;'>● <b>Connected:</b> <code>{gw.port}</code> @ {gw.baud} baud</div>",
+                unsafe_allow_html=True
+            )
             if st.button("⏹ Disconnect Receiver", use_container_width=True):
                 gw.disconnect()
                 st.toast("Disconnected from serial port.", icon="⏹")

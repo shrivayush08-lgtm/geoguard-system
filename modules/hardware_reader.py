@@ -72,37 +72,142 @@ class SerialTelemetryGateway:
         self.adc_dry_baseline: int = 3500
         self.adc_wet_baseline: int = 1200
         self._kv_buffer: Dict[str, Any] = {}
+        self.last_auto_scan_time: float = 0.0
+
+    @staticmethod
+    def get_port_candidates() -> List[Dict[str, Any]]:
+        """
+        Scans all system serial ports and scores them.
+        Filters out virtual Bluetooth ports and prioritizes real USB UART bridges (CP210x, CH340, FTDI, Espressif).
+        """
+        try:
+            ports = serial.tools.list_ports.comports()
+        except Exception:
+            return []
+
+        candidates = []
+        for p in ports:
+            device = p.device
+            desc = p.description or ""
+            hwid = p.hwid or ""
+            mfr = p.manufacturer or ""
+            vid = p.vid
+            pid = p.pid
+
+            # Skip Bluetooth virtual serial ports
+            if "bluetooth" in desc.lower() or "bthenum" in hwid.lower():
+                continue
+
+            score = 0
+            is_esp32 = False
+
+            # Known USB-to-UART bridge VIDs for ESP32 boards:
+            # 0x10C4: Silicon Labs CP210x (ESP32 NodeMCU, DevKit v1)
+            # 0x1A86: WCH CH340 / CH341 (ESP32 clone boards)
+            # 0x303A: Espressif Native USB CDC / JTAG (ESP32-S2/S3/C3)
+            # 0x0403: FTDI (Industrial ESP32 boards)
+            # 0x067B: Prolific PL2303
+            if vid in [0x10c4, 0x1a86, 0x303a, 0x0403, 0x067b]:
+                score += 150
+                is_esp32 = True
+
+            desc_lower = desc.lower()
+            if any(k in desc_lower for k in ["cp210", "ch340", "ch341", "esp32", "espressif", "uart bridge", "ftdi"]):
+                score += 100
+                is_esp32 = True
+
+            mfr_lower = mfr.lower()
+            if any(k in mfr_lower for k in ["silicon labs", "wch", "espressif", "ftdi"]):
+                score += 50
+                is_esp32 = True
+
+            if "usb" in hwid.lower() or "usb" in desc_lower:
+                score += 20
+
+            candidates.append({
+                "device": device,
+                "description": desc,
+                "hwid": hwid,
+                "manufacturer": mfr,
+                "vid": vid,
+                "pid": pid,
+                "is_esp32": is_esp32,
+                "score": score,
+                "label": f"{device} - {desc}" + (" [ESP32 DETECTED]" if is_esp32 else "")
+            })
+
+        # Sort highest score first
+        candidates.sort(reverse=True, key=lambda c: c["score"])
+        return candidates
+
+    @staticmethod
+    def auto_detect_esp32() -> Tuple[Optional[str], Optional[str]]:
+        """
+        Auto-detects which serial port the ESP32 is plugged into.
+        Returns (port_device, description) or (None, None).
+        """
+        candidates = SerialTelemetryGateway.get_port_candidates()
+        if candidates and candidates[0]["is_esp32"]:
+            return candidates[0]["device"], candidates[0]["description"]
+        elif candidates and candidates[0]["score"] > 0:
+            return candidates[0]["device"], candidates[0]["description"]
+        return None, None
 
     @staticmethod
     def list_available_ports() -> List[str]:
-        """Scans the host system for active serial COM ports."""
+        """Scans the host system for active serial COM ports, placing USB/ESP32 devices first."""
+        candidates = SerialTelemetryGateway.get_port_candidates()
+        if candidates:
+            return [c["device"] for c in candidates]
         try:
             ports = serial.tools.list_ports.comports()
             return [p.device for p in ports]
         except Exception:
             return []
 
+    def auto_connect(self, baud_rate: int = 115200) -> Tuple[bool, str, Optional[str]]:
+        """
+        Automatically scans ports, detects the ESP32, and connects to it.
+        Returns (success, message, detected_port).
+        """
+        port, desc = self.auto_detect_esp32()
+        if not port:
+            msg = "No ESP32 detected on USB ports. Please plug in your ESP32 device."
+            self.status_message = msg
+            return False, msg, None
+
+        success, msg = self.connect(port, baud_rate)
+        if success:
+            self.status_message = f"[AUTO-DETECTED] Connected to ESP32 on {port} ({desc}) at {baud_rate} baud."
+            return True, self.status_message, port
+        return False, msg, port
+
     def connect(self, port_name: str = "COM3", baud_rate: int = 115200) -> Tuple[bool, str]:
         """Safely opens a non-blocking serial connection to the ESP32 receiver."""
+        # Clean port_name if string has formatting e.g. "COM19 - Silicon Labs CP210x [⚡ ESP32]"
+        clean_port = port_name.split()[0].strip() if " " in port_name else port_name.strip()
+
         if self.is_connected:
+            if self.port == clean_port and self.serial_conn and self.serial_conn.is_open:
+                return True, f"Already connected to {clean_port}."
             self.disconnect()
 
         try:
             self.serial_conn = serial.Serial(
-                port=port_name,
+                port=clean_port,
                 baudrate=int(baud_rate),
                 timeout=self.timeout,
                 write_timeout=self.timeout
             )
-            self.port = port_name
+            self.port = clean_port
             self.baud = int(baud_rate)
             self.is_connected = True
-            self.status_message = f"Connected to {port_name} at {baud_rate} baud. Awaiting sensor stream..."
+            self.status_message = f"Connected to {clean_port} at {baud_rate} baud. Awaiting sensor stream..."
             return True, self.status_message
         except Exception as e:
             self.is_connected = False
             self.serial_conn = None
-            self.status_message = f"Failed to connect to {port_name}: {str(e)}"
+            self.status_message = f"Failed to connect to {clean_port}: {str(e)}"
             return False, self.status_message
 
     def disconnect(self):
