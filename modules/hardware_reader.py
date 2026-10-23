@@ -158,6 +158,15 @@ class SerialTelemetryGateway:
         if not line:
             return None
 
+        # Ignore informational boot, system, and diagnostic lines
+        line_lower = line.lower()
+        if any(line_lower.startswith(p) for p in [
+            "rst:", "configsip", "clk_drv", "mode:", "load:", "ho ", "entry ",
+            "nrf24", "emergency wi-fi", "mobile emergency", "ap ip", "packet #",
+            "---", "connected to", "ready", "listening", "hard resetting"
+        ]) or "listening on" in line_lower:
+            return None
+
         now_iso = datetime.now(timezone.utc).isoformat()
 
         # Format 1: JSON payload
@@ -240,8 +249,29 @@ class SerialTelemetryGateway:
                     rain_mmh = round(float(raw_rain_adc), 1)
 
                 raw_temp = float(self._kv_buffer.get("temp", 22.0))
-                raw_tilt = float(self._kv_buffer.get("tilt", 0.5))
-                raw_vib = float(self._kv_buffer.get("accel", self._kv_buffer.get("vib", 0.08)))
+
+                # Handle Tilt from direct "tilt:" reading or infer from "acceleration:" transducer
+                if "tilt" in self._kv_buffer:
+                    raw_tilt = float(self._kv_buffer["tilt"])
+                elif "accel" in self._kv_buffer:
+                    a_val = float(self._kv_buffer["accel"])
+                    if abs(a_val) <= 1.05:
+                        # Convert 1g gravitational component to angular degrees
+                        raw_tilt = round(math.acos(max(-1.0, min(1.0, abs(a_val)))) * 180.0 / math.pi, 2)
+                    else:
+                        raw_tilt = round(abs(a_val), 2)
+                else:
+                    raw_tilt = 0.5
+
+                # Ground vibration from digital vibration sensor or seismic transducer
+                raw_vib_val = self._kv_buffer.get("vib", None)
+                if raw_vib_val is not None:
+                    raw_vib = 0.85 if (float(raw_vib_val) >= 1.0) else 0.02
+                elif "accel" in self._kv_buffer and "tilt" in self._kv_buffer:
+                    raw_vib = float(self._kv_buffer.get("accel", 0.02))
+                else:
+                    raw_vib = 0.02
+
                 self._kv_buffer.clear()
                 soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
                 return {

@@ -468,8 +468,7 @@ def get_plotly_theme():
     return dict(
         paper_bgcolor='rgba(0,0,0,0)',
         plot_bgcolor='rgba(17, 24, 39, 0.4)',
-        font=dict(family='Inter, sans-serif', color='#94A3B8', size=11),
-        margin=dict(l=35, r=20, t=35, b=25)
+        font=dict(family='Inter, sans-serif', color='#94A3B8', size=11)
     )
 
 
