@@ -1,4 +1,4 @@
-# 🛡️ GeoGuardd — Highway Intelligence & Landslide Early Warning System
+# 🛡️ GeoGuard — Highway Intelligence & Landslide Early Warning System
 
 > **A mission-critical disaster management control room and IoT telemetry analytics platform designed for mountainous highway corridors.**
 
