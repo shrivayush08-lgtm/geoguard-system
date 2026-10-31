@@ -68,7 +68,7 @@ from modules.data_store import (
     enrich_station_telemetry, # Calculates multi-factor risk scores across all stations
     get_system_kpis           # Computes active stations, alerts, and system health
 )
-from modules.hardware_reader import SerialTelemetryGateway # Non-blocking PySerial ESP32 gateway
+from modules.hardware_reader import SerialTelemetryGateway, get_hardware_gateway # Non-blocking PySerial ESP32 gateway
 from modules.interlock import HighwayInterlockSystem       # Highway interlock & dispatch logger
 from modules.gps_simulator import (
     DEFAULT_GPS_UNITS,  # Default 5 mobile emergency response & patrol units
@@ -122,11 +122,15 @@ if 'stations_telemetry' not in st.session_state:
 if 'gps_units' not in st.session_state:
     st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
 
-if 'operating_mode' not in st.session_state:
-    st.session_state.operating_mode = "SIMULATION"
+if 'serial_gateway' not in st.session_state or not hasattr(st.session_state.serial_gateway, 'auto_detect_esp32'):
+    st.session_state.serial_gateway = get_hardware_gateway(default_port="COM19", default_baud=115200)
+    init_port, _ = SerialTelemetryGateway.auto_detect_esp32()
+    if init_port:
+        st.session_state.serial_gateway.port = init_port
 
-if 'serial_gateway' not in st.session_state:
-    st.session_state.serial_gateway = SerialTelemetryGateway(default_port="COM3", default_baud=115200)
+if 'operating_mode' not in st.session_state:
+    init_p, _ = SerialTelemetryGateway.auto_detect_esp32()
+    st.session_state.operating_mode = "HARDWARE" if init_p else "SIMULATION"
 
 if 'gps_gateway' not in st.session_state:
     st.session_state.gps_gateway = GPSHardwareGateway()
@@ -135,10 +139,10 @@ if 'interlock_system' not in st.session_state:
     st.session_state.interlock_system = HighwayInterlockSystem(hysteresis_ticks_required=3)
 
 if 'emergency' not in st.session_state:
-    st.session_state.emergency = False
+    st.session_state.emergency = True
 
 if 'emergency_target' not in st.session_state:
-    st.session_state.emergency_target = "GG-001"
+    st.session_state.emergency_target = "GG-002"
 
 if 'auto_tick' not in st.session_state:
     st.session_state.auto_tick = False
@@ -162,13 +166,27 @@ if st.session_state.operating_mode == "SIMULATION":
     )
 elif st.session_state.operating_mode == "HARDWARE":
     # 1. Read fixed geotechnical station packet via USB serial (CSV or JSON)
-    gw = st.session_state.serial_gateway
+    gw = get_hardware_gateway(default_port="COM19", default_baud=115200)
+    st.session_state.serial_gateway = gw
+    if not gw.is_connected and st.session_state.get("auto_detect_esp", True):
+        # Auto-detect and connect to ESP32 on whatever USB port it is plugged into
+        now_ts = time.time()
+        if now_ts - getattr(gw, "last_auto_scan_time", 0.0) > 3.5:
+            gw.last_auto_scan_time = now_ts
+            detected_p, _ = gw.auto_detect_esp32()
+            if detected_p:
+                gw.connect(detected_p, getattr(gw, "baud", 115200))
+
     if gw.is_connected:
         packet = gw.read_latest_packet()
         if packet:
-            stn_id = packet.get("station_id", "GG-001")
+            # Physical ESP32 receiver telemetry routes directly into Shivpuri (GG-002)
+            # and also updates GG-001 and the currently viewed node so all screens reflect live hardware readings
+            stn_id = packet.get("station_id", "GG-002")
+            viewed_id = st.session_state.get("live_sensor_station_select", "GG-002")
+            target_ids = {stn_id, "GG-002", "GG-001", viewed_id}
             for s in st.session_state.stations_telemetry:
-                if s["id"] == stn_id:
+                if s["id"] in target_ids:
                     s["soil_moisture_pct"] = packet.get("soil_moisture_pct", s.get("soil_moisture_pct", 35.0))
                     if "soil_adc" in packet and packet["soil_adc"] is not None:
                         s["soil_adc"] = packet["soil_adc"]
@@ -178,7 +196,7 @@ elif st.session_state.operating_mode == "HARDWARE":
                     s["tilt_degrees"] = s["tilt"]
                     s["vib"] = (packet.get("vibration_pga", 0.0) > 0.15)
                     s["vib_g"] = packet.get("vibration_pga", s.get("vib_g", 0.02))
-                    s["rainfall_intensity_mmh"] = packet.get("rain_intensity_mmh")
+                    s["rainfall_intensity_mmh"] = packet.get("rain_intensity_mmh", 0.0)
                     s["rain_intensity"] = s["rainfall_intensity_mmh"]
                     s["is_simulated"] = False
                     s["is_valid"] = packet.get("is_valid", True)
@@ -226,6 +244,17 @@ elif st.session_state.operating_mode == "HARDWARE":
 
 # Calculate real-time risk scores and categories across all stations
 enriched_stations = enrich_station_telemetry(st.session_state.stations_telemetry)
+
+# Automated Safety Trigger: Track critical state & all-clear resolution transitions
+has_critical = any(stn["risk_level"] == "CRITICAL" for stn in enriched_stations)
+was_critical = st.session_state.get("_was_critical_active", False)
+
+if was_critical and not has_critical:
+    # Alarm just stopped! Trigger all-clear resolution popup & banner
+    st.toast("🟢 [RESOLVED] GeoGuard Alert: Landslide hazard at Shivpuri (GG-002) has cleared. Telemetry nominal. Sector reopened.", icon="✅")
+    st.session_state._alert_resolved_timestamp = time.time()
+
+st.session_state._was_critical_active = has_critical
 
 # Automated Safety Trigger: Log critical alert with cooldown protection
 for stn in enriched_stations:
@@ -346,7 +375,7 @@ with st.sidebar:
         # 4. Test Critical Risk Button (> 70.0)
         if st.button("🔴 Test Critical Risk (> 70)", type="primary", use_container_width=True, help="Sets deterministic readings producing score > 70 (Critical Danger & Interlock Trip)"):
             for s in st.session_state.stations_telemetry:
-                if s["id"] == "GG-001":
+                if s["id"] == "GG-002":
                     s["soil_adc"] = 3600
                     s["soil_moisture_pct"] = 82.0
                     s["temp_c"] = -1.5  # acute freeze-thaw wedging
@@ -357,12 +386,12 @@ with st.sidebar:
                     s["rainfall_intensity_mmh"] = 48.5
                     s["rain_intensity"] = 48.5
             st.session_state.emergency = True
-            st.session_state.emergency_target = "GG-001"
+            st.session_state.emergency_target = "GG-002"
             # Mobilize emergency QRT units
             for u in st.session_state.gps_units:
                 if u["unit_id"] in ["UNIT-SAR-01", "UNIT-BRO-753"]:
                     u["health_status"] = "DISPATCHED"
-                    u["incident_assignment"] = "CRISIS DISPATCH — Emergency Response to GG-001 Byasi Gorge"
+                    u["incident_assignment"] = "CRISIS DISPATCH — Emergency Response to Shivpuri (GG-002)"
             st.toast("CRITICAL DANGER: Interlock tripped, Barrier CLOSED, Signals RED!", icon="🔴")
             st.rerun()
 
@@ -377,24 +406,78 @@ with st.sidebar:
 
     else:
         # Hardware Serial Receiver Management Console
-        st.markdown("<div class='hud-eyebrow'>ESP32 SERIAL INTERFACE</div>", unsafe_allow_html=True)
+        st.markdown("<div class='hud-eyebrow'>ESP32 HARDWARE INTERFACE</div>", unsafe_allow_html=True)
         gw = st.session_state.serial_gateway
-        avail_ports = gw.list_available_ports()
-        port_choices = avail_ports if avail_ports else ["COM3", "COM4", "/dev/ttyUSB0"]
-        default_port_idx = port_choices.index("COM19") if "COM19" in port_choices else 0
 
-        selected_port = st.selectbox("Serial Port", port_choices, index=default_port_idx)
+        # Auto-detect ESP32 on any USB port
+        detected_port, detected_desc = gw.auto_detect_esp32()
+        candidates = gw.get_port_candidates()
+
+        # Visual Auto-Detection Callout
+        if detected_port:
+            st.markdown(
+                f"<div style='background:rgba(16,185,129,0.12); border:1px solid #10B981; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
+                f"<div style='font-size:11px; font-weight:700; color:#10B981;'>⚡ ESP32 AUTO-DETECTED</div>"
+                f"<div style='font-size:13px; font-weight:600; color:#F3F4F6;'>Port: <code>{detected_port}</code></div>"
+                f"<div style='font-size:10px; color:#9CA3AF;'>{detected_desc}</div>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                "<div style='background:rgba(245,158,11,0.12); border:1px solid #F59E0B; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
+                "<div style='font-size:11px; font-weight:700; color:#F59E0B;'>⚠️ NO ESP32 DETECTED</div>"
+                "<div style='font-size:10px; color:#9CA3AF;'>Plug ESP32 into any USB port to auto-connect.</div>"
+                "</div>",
+                unsafe_allow_html=True
+            )
+
+        st.checkbox(
+            "⚡ Auto-Detect & Connect to Any Port",
+            value=st.session_state.get("auto_detect_esp", True),
+            key="auto_detect_esp",
+            help="Automatically detects which USB port your ESP32 is plugged into and establishes live telemetry."
+        )
+
+        # Build clean port choice labels
+        if candidates:
+            port_labels = [c["label"] for c in candidates]
+            if detected_port:
+                default_port_idx = next((i for i, c in enumerate(candidates) if c["device"] == detected_port), 0)
+            elif gw.is_connected:
+                default_port_idx = next((i for i, c in enumerate(candidates) if c["device"] == gw.port), 0)
+            else:
+                default_port_idx = 0
+        else:
+            avail_ports = gw.list_available_ports()
+            port_labels = avail_ports if avail_ports else ["COM19", "COM3", "COM4", "/dev/ttyUSB0"]
+            default_port_idx = 0
+
+        selected_label = st.selectbox("Serial Port (Auto-Ranked)", port_labels, index=default_port_idx)
+        selected_port = selected_label.split()[0].strip() if " " in selected_label else selected_label.strip()
         selected_baud = st.selectbox("Baud Rate", [9600, 19200, 38400, 57600, 115200], index=4)
 
         if not gw.is_connected:
-            if st.button("🔌 Connect Receiver", type="primary", use_container_width=True):
-                success, msg = gw.connect(selected_port, selected_baud)
+            btn_label = f"⚡ Connect ESP32 ({detected_port})" if detected_port else "🔌 Connect Receiver"
+            if st.button(btn_label, type="primary", use_container_width=True):
+                target_port = detected_port if detected_port else selected_port
+                success, msg = gw.connect(target_port, selected_baud)
                 if success:
-                    st.toast(f"Connected to {selected_port}!", icon="🔌")
+                    st.toast(f"Connected to {target_port}!", icon="🔌")
+                    st.rerun()
                 else:
                     st.error(msg)
-                st.rerun()
+            
+            # Show lock warning or status message if present
+            if gw.status_message and ("locked" in gw.status_message.lower() or "busy" in gw.status_message.lower() or "access denied" in gw.status_message.lower()):
+                st.error(f"⚠️ {gw.status_message}")
+            elif gw.status_message and "Failed" in gw.status_message:
+                st.warning(f"⚠️ {gw.status_message}")
         else:
+            st.markdown(
+                f"<div style='font-size:12px; color:#10B981; margin-bottom:6px;'>● <b>Connected:</b> <code>{gw.port}</code> @ {gw.baud} baud</div>",
+                unsafe_allow_html=True
+            )
             if st.button("⏹ Disconnect Receiver", use_container_width=True):
                 gw.disconnect()
                 st.toast("Disconnected from serial port.", icon="⏹")
@@ -449,6 +532,10 @@ render_hud_header(
     network_health=kpis["network_health"]
 )
 
+# Prominent All-Clear Resolution Banner when alarm stops
+if time.time() - st.session_state.get("_alert_resolved_timestamp", 0) < 25.0:
+    st.success("🟢 **ALL CLEAR &bull; [RESOLVED]** GeoGuard Alert: Landslide hazard at Shivpuri (GG-002) has cleared. Telemetry nominal. Sector reopened.")
+
 # ---------------------------------------------------------------------------
 # SECTION 9: Navigation Routing Dispatcher
 # ---------------------------------------------------------------------------
@@ -481,8 +568,8 @@ render_disclaimer()
 # ---------------------------------------------------------------------------
 # SECTION 11: Controlled Telemetry Auto-Stream Loop
 # ---------------------------------------------------------------------------
-# In HARDWARE mode with active connection, auto-refresh every 1.2s to stream live sensor readings
-if st.session_state.operating_mode == "HARDWARE" and gw.is_connected:
+# In HARDWARE mode, auto-refresh every 1.2s to stream live sensor readings
+if st.session_state.operating_mode == "HARDWARE":
     time.sleep(1.2)
     st.rerun()
 elif st.session_state.auto_tick:

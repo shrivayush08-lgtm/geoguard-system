@@ -47,6 +47,11 @@ from modules.ui import (
     COLOR_CRITICAL,
     COLOR_BORDER
 )
+from modules.sms_dispatcher import (
+    format_landslide_sms_message,
+    send_fast2sms,
+    check_and_dispatch_automatic_sms
+)
 from modules.risk_engine import (
     calculate_five_sensor_risk,
     calculate_four_sensor_risk,
@@ -174,9 +179,11 @@ def render_live_sensor_page(enriched_stations):
     with ctrl_col1:
         station_options = [s["id"] for s in enriched_stations]
         station_names = {s["id"]: f"{s['id']} — {s['name']} ({s.get('corridor', 'NH-58')})" for s in enriched_stations}
+        default_stn_idx = next((i for i, sid in enumerate(station_options) if sid == "GG-002"), 0)
         selected_id = st.selectbox(
             "Target Sensor Node (ESP32 Stream)",
             station_options,
+            index=default_stn_idx,
             format_func=lambda x: station_names.get(x, x),
             key="live_sensor_station_select"
         )
@@ -216,6 +223,17 @@ def render_live_sensor_page(enriched_stations):
             conn_html = "<span style='background: rgba(56, 189, 248, 0.12); border: 1px solid #38BDF8; color: #38BDF8; padding: 6px 12px; border-radius: 4px; font-family: monospace; font-size: 11px; font-weight: 600; display: inline-block;'>● SIMULATION MODE ACTIVE</span>"
         
         st.markdown(f"<div style='text-align: right;'>{conn_html}</div>", unsafe_allow_html=True)
+
+    # Hardware connection diagnostic banner
+    gateway = st.session_state.get("serial_gateway")
+    if op_mode == "HARDWARE" and gateway and not gateway.is_connected:
+        if "locked" in gateway.status_message.lower() or "busy" in gateway.status_message.lower() or "access denied" in gateway.status_message.lower():
+            st.error(
+                "⚠️ **ESP32 COM Port Locked (Access Denied):** Arduino IDE Serial Monitor or another software currently has COM19 open. "
+                "**Please CLOSE the Arduino IDE Serial Monitor window**, then click **'⚡ Connect ESP32'** in the sidebar to stream live geotechnical telemetry."
+            )
+        elif "failed" in gateway.status_message.lower():
+            st.warning(f"⚠️ **Hardware Interface Notice:** {gateway.status_message}")
 
     with st.expander("📟 View & Copy Matched ESP32 Firmware (Receiver & Transmitter Codes)", expanded=False):
         c_tab1, c_tab2 = st.tabs(["📡 ESP32 Receiver Sketch", "🏔️ ESP32 Transmitter Sketch"])
@@ -468,8 +486,19 @@ def render_live_sensor_page(enriched_stations):
     # CARD 3: Slope / Tilt Sensor (Weight: 25%)
     with card_c3:
         slope_risk = sensor_scores.get("slope", 0.0)
-        sl_status = "CRITICAL" if slope_risk > 70 else ("ELEVATED" if slope_risk >= 40 else "NORMAL")
+        # Calibrated trigger: tilt < 55° (dropped >5° from 60° baseline) is CRITICAL
+        sl_status = "CRITICAL" if (slope_risk > 70 or tilt_deg < 55.0) else ("ELEVATED" if (slope_risk >= 40 or tilt_deg < 58.0) else "NORMAL")
         sl_color = "#EF4444" if sl_status == "CRITICAL" else ("#F59E0B" if sl_status == "ELEVATED" else "#10B981")
+        
+        # Calibration baseline: 60° resting slope
+        delta_from_60 = 60.0 - tilt_deg
+        if tilt_deg >= 55.0 and tilt_deg <= 65.0:
+            tilt_cal_sub = f"Baseline: 60° (Δ {delta_from_60:+.1f}°: Stable)"
+        elif tilt_deg < 55.0:
+            tilt_cal_sub = f"<b style='color:#EF4444;'>⚠️ SLIP: Dropped {delta_from_60:.1f}° from 60°!</b>"
+        else:
+            tilt_cal_sub = f"Deviation: {delta_from_60:+.1f}° from 60°"
+
         with st.container(border=True):
             render_html(f"""
             <div style='display: flex; justify-content: space-between; align-items: center;'>
@@ -482,7 +511,7 @@ def render_live_sensor_page(enriched_stations):
                 {tilt_deg:.2f} <span style='font-size: 13px; font-weight: 500; color: #94A3B8;'>Degrees (°)</span>
             </div>
             <div style='font-size: 11px; color: #64748B; margin-bottom: 4px;'>
-                Creep Rate: <b>{tilt_rate:+.2f}°/hour</b>
+                {tilt_cal_sub}
             </div>
             """)
             st.plotly_chart(render_sparkline_chart(spark_tilt, color_hex=sl_color, height=52), use_container_width=True, config={'displayModeBar': False}, key='spark_tilt_chart')
@@ -627,10 +656,10 @@ def render_live_sensor_page(enriched_stations):
                 <div>
                     <div style='display: flex; justify-content: space-between; margin-bottom: 2px;'>
                         <span>📐 Slope Inclinometer ({tilt_deg:.2f}°):</span>
-                        <b>{slope_risk:.1f}/100 | W: {w_slope*100:.0f}% | +{c_slope:.1f} pts</b>
+                        <b style='color: {"#EF4444" if slope_risk > 70 else "#F8FAFC"};'>{slope_risk:.1f}/100 | W: {w_slope*100:.0f}% | +{c_slope:.1f} pts</b>
                     </div>
                     <div style='background: #1F2937; height: 5px; border-radius: 3px; overflow: hidden;'>
-                        <div style='background: #F59E0B; width: {slope_risk}%; height: 100%;'></div>
+                        <div style='background: {"#EF4444" if slope_risk > 70 else "#F59E0B"}; width: {slope_risk}%; height: 100%;'></div>
                     </div>
                 </div>
                 <div>
@@ -791,6 +820,78 @@ def render_live_sensor_page(enriched_stations):
     st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 18px 0;'>", unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
+    # 10B. Mobile Phone Emergency Alert & Cellular SMS Terminal
+    # -------------------------------------------------------------------------
+    st.markdown("<div class='hud-eyebrow'>MOBILE EMERGENCY DISPATCH GATEWAY</div>", unsafe_allow_html=True)
+    st.markdown("<h3 style='margin-top:0;'>📱 Mobile Phone Emergency Alert & Cellular SMS Terminal</h3>", unsafe_allow_html=True)
+
+    sms_col1, sms_col2 = st.columns([1.5, 1.5])
+
+    with sms_col1:
+        st.markdown("#### 📶 1. 100% Offline Wi-Fi Portal (Active on ESP32)")
+        render_html("""
+        <div style='background: #111827; border: 1px solid #10B981; border-radius: 8px; padding: 14px 18px;'>
+            <div style='display:flex; justify-content:space-between; align-items:center;'>
+                <b style='color:#10B981; font-size:14px;'>● LOCAL EMERGENCY WI-FI BROADCASTING</b>
+                <span style='background:rgba(16,185,129,0.15); color:#10B981; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:700;'>OFFLINE</span>
+            </div>
+            <div style='font-size:12px; color:#E2E8F0; margin-top:8px; line-height:1.5;'>
+                Connect your mobile phone right now to:<br>
+                <b>Wi-Fi Name (SSID):</b> <span style='color:#38BDF8; font-weight:700;'>GEOGUARD-DISASTER-ALERT</span><br>
+                <b>Password:</b> <i>None (Open Network)</i><br>
+                <b>Browser URL:</b> <a href='http://192.168.4.1' target='_blank' style='color:#F59E0B; font-weight:700;'>http://192.168.4.1</a>
+            </div>
+            <div style='font-size:11px; color:#94A3B8; margin-top:6px;'>
+                ⚡ Zero internet required. Features live tilt/rain streaming + loud oscillating siren sound on your phone speakers.
+            </div>
+        </div>
+        """)
+
+    with sms_col2:
+        st.markdown("#### ✉️ 2. Real Cellular SMS to Indian Mobile (+91)")
+        with st.container(border=True):
+            sms_phone = st.text_input("Recipient Indian Mobile Number", value=st.session_state.get("emergency_mobile", ""), placeholder="e.g. 9876543210")
+            st.session_state["emergency_mobile"] = sms_phone
+            fast2sms_key = st.text_input("Fast2SMS API Key (Optional)", value=st.session_state.get("fast2sms_key", ""), type="password", help="Enter your free Fast2SMS API key to deliver SMS via GSM network.")
+            st.session_state["fast2sms_key"] = fast2sms_key
+
+            auto_sms = st.checkbox("🔔 Automatically send SMS on Critical Landslide / Heavy Rain Trigger", value=st.session_state.get("auto_sms_enabled", False))
+            st.session_state["auto_sms_enabled"] = auto_sms
+
+            if st.button("🚨 Send Test Emergency SMS to Phone", type="primary", use_container_width=True):
+                if not sms_phone:
+                    st.error("Please enter a valid 10-digit mobile number.")
+                else:
+                    sample_msg = format_landslide_sms_message(stn_id, tilt_deg, rain_mmh_val, soil_pct)
+                    if fast2sms_key:
+                        ok, res = send_fast2sms(fast2sms_key, sms_phone, sample_msg)
+                        if ok:
+                            st.success(f"SMS delivered: {res}")
+                        else:
+                            st.warning(f"Gateway Notice: {res}")
+                    else:
+                        st.info(f"📱 Demo SMS Simulated for +91 {sms_phone}!\n\nMessage Body:\n{sample_msg}\n\n(Tip: Enter your Fast2SMS key to send real cellular SMS over the carrier network!)")
+
+    # If auto-SMS enabled and danger triggered:
+    if st.session_state.get("auto_sms_enabled") and st.session_state.get("emergency_mobile"):
+        cur_sensor_pkt = {
+            "station_id": stn_id,
+            "tilt_degrees": tilt_deg,
+            "rain_intensity_mmh": rain_mmh_val,
+            "soil_moisture_pct": soil_pct,
+            "landslide": (risk_level == "CRITICAL" or tilt_deg < 55.0 or (rain_mmh_val is not None and rain_mmh_val > 25.0))
+        }
+        ok, res = check_and_dispatch_automatic_sms(
+            sensor_dict=cur_sensor_pkt,
+            mobile_number=st.session_state["emergency_mobile"],
+            fast2sms_key=st.session_state.get("fast2sms_key", "")
+        )
+        if ok:
+            st.toast(f"Emergency SMS dispatched to {st.session_state['emergency_mobile']}!", icon="🚨")
+
+    st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 18px 0;'>", unsafe_allow_html=True)
+
+    # -------------------------------------------------------------------------
     # 11. 2D Mountain Slope Stratigraphy Cross-Section (SVG)
     # -------------------------------------------------------------------------
     render_slope_cross_section_svg(tilt_degrees=tilt_deg, soil_pct=soil_pct, risk_level=risk_level)
@@ -806,7 +907,9 @@ def render_live_sensor_page(enriched_stations):
     if hist_df.empty:
         st.info(f"No historical telemetry logged yet for station {selected_id} in {time_window}. Stream is actively logging.")
     else:
-        plotly_theme = get_plotly_theme()
+        plotly_theme = dict(get_plotly_theme())
+        plotly_theme.pop("margin", None)
+        plotly_theme.pop("height", None)
 
         # 6 Separate Time-Series Charts (5 Transducers + 1 Composite Risk Index)
         # Row 1: Soil Moisture & Rain Intensity
@@ -867,7 +970,8 @@ def render_live_sensor_page(enriched_stations):
                 fillcolor="rgba(245, 158, 11, 0.08)",
                 mode="lines"
             ))
-            fig_tilt.add_hline(y=2.0, line_dash="dash", line_color="#EF4444", annotation_text="Critical Shear Limit (2.0°)", annotation_font_color="#EF4444")
+            fig_tilt.add_hline(y=60.0, line_dash="dot", line_color="#10B981", annotation_text="Baseline (60.0°)", annotation_font_color="#10B981")
+            fig_tilt.add_hline(y=55.0, line_dash="dash", line_color="#EF4444", annotation_text="Critical Shear Limit (< 55.0°)", annotation_font_color="#EF4444")
             fig_tilt.update_layout(**plotly_theme, height=260, margin=dict(l=10, r=10, t=30, b=10))
             st.plotly_chart(fig_tilt, use_container_width=True, key='history_tilt_chart')
 

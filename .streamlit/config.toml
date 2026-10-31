@@ -9,5 +9,10 @@ font = "sans serif"
 showSidebarNavigation = false
 showErrorDetails = true
 
+[browser]
+gatherUsageStats = false
+
 [server]
 headless = true
+enableCORS = false
+enableXsrfProtection = false

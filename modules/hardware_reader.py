@@ -72,37 +72,162 @@ class SerialTelemetryGateway:
         self.adc_dry_baseline: int = 3500
         self.adc_wet_baseline: int = 1200
         self._kv_buffer: Dict[str, Any] = {}
+        self.last_auto_scan_time: float = 0.0
+
+    @staticmethod
+    def get_port_candidates() -> List[Dict[str, Any]]:
+        """
+        Scans all system serial ports and scores them.
+        Filters out virtual Bluetooth ports and prioritizes real USB UART bridges (CP210x, CH340, FTDI, Espressif).
+        """
+        try:
+            ports = serial.tools.list_ports.comports()
+        except Exception:
+            return []
+
+        candidates = []
+        for p in ports:
+            device = p.device
+            desc = p.description or ""
+            hwid = p.hwid or ""
+            mfr = p.manufacturer or ""
+            vid = p.vid
+            pid = p.pid
+
+            # Skip Bluetooth virtual serial ports
+            if "bluetooth" in desc.lower() or "bthenum" in hwid.lower():
+                continue
+
+            score = 0
+            is_esp32 = False
+
+            # Known USB-to-UART bridge VIDs for ESP32 boards:
+            # 0x10C4: Silicon Labs CP210x (ESP32 NodeMCU, DevKit v1)
+            # 0x1A86: WCH CH340 / CH341 (ESP32 clone boards)
+            # 0x303A: Espressif Native USB CDC / JTAG (ESP32-S2/S3/C3)
+            # 0x0403: FTDI (Industrial ESP32 boards)
+            # 0x067B: Prolific PL2303
+            if vid in [0x10c4, 0x1a86, 0x303a, 0x0403, 0x067b]:
+                score += 150
+                is_esp32 = True
+
+            desc_lower = desc.lower()
+            if any(k in desc_lower for k in ["cp210", "ch340", "ch341", "esp32", "espressif", "uart bridge", "ftdi"]):
+                score += 100
+                is_esp32 = True
+
+            mfr_lower = mfr.lower()
+            if any(k in mfr_lower for k in ["silicon labs", "wch", "espressif", "ftdi"]):
+                score += 50
+                is_esp32 = True
+
+            if "usb" in hwid.lower() or "usb" in desc_lower:
+                score += 20
+
+            candidates.append({
+                "device": device,
+                "description": desc,
+                "hwid": hwid,
+                "manufacturer": mfr,
+                "vid": vid,
+                "pid": pid,
+                "is_esp32": is_esp32,
+                "score": score,
+                "label": f"{device} - {desc}" + (" [ESP32 DETECTED]" if is_esp32 else "")
+            })
+
+        # Sort highest score first
+        candidates.sort(reverse=True, key=lambda c: c["score"])
+        return candidates
+
+    @staticmethod
+    def auto_detect_esp32() -> Tuple[Optional[str], Optional[str]]:
+        """
+        Auto-detects which serial port the ESP32 is plugged into.
+        Returns (port_device, description) or (None, None).
+        """
+        candidates = SerialTelemetryGateway.get_port_candidates()
+        if candidates and candidates[0]["is_esp32"]:
+            return candidates[0]["device"], candidates[0]["description"]
+        elif candidates and candidates[0]["score"] > 0:
+            return candidates[0]["device"], candidates[0]["description"]
+        return None, None
 
     @staticmethod
     def list_available_ports() -> List[str]:
-        """Scans the host system for active serial COM ports."""
+        """Scans the host system for active serial COM ports, placing USB/ESP32 devices first."""
+        candidates = SerialTelemetryGateway.get_port_candidates()
+        if candidates:
+            return [c["device"] for c in candidates]
         try:
             ports = serial.tools.list_ports.comports()
             return [p.device for p in ports]
         except Exception:
             return []
 
+    def auto_connect(self, baud_rate: int = 115200) -> Tuple[bool, str, Optional[str]]:
+        """
+        Automatically scans ports, detects the ESP32, and connects to it.
+        Returns (success, message, detected_port).
+        """
+        port, desc = self.auto_detect_esp32()
+        if not port:
+            msg = "No ESP32 detected on USB ports. Please plug in your ESP32 device."
+            self.status_message = msg
+            return False, msg, None
+
+        success, msg = self.connect(port, baud_rate)
+        if success:
+            self.status_message = f"[AUTO-DETECTED] Connected to ESP32 on {port} ({desc}) at {baud_rate} baud."
+            return True, self.status_message, port
+        return False, msg, port
+
     def connect(self, port_name: str = "COM3", baud_rate: int = 115200) -> Tuple[bool, str]:
         """Safely opens a non-blocking serial connection to the ESP32 receiver."""
-        if self.is_connected:
-            self.disconnect()
+        # Clean port_name if string has formatting e.g. "COM19 - Silicon Labs CP210x [⚡ ESP32]"
+        clean_port = port_name.split()[0].strip() if " " in port_name else port_name.strip()
+
+        # If already open and healthy on the requested port, return immediately
+        if self.serial_conn is not None and self.serial_conn.is_open:
+            if self.port == clean_port:
+                self.is_connected = True
+                return True, f"Already connected to {clean_port} at {self.baud} baud."
+            else:
+                self.disconnect()
 
         try:
-            self.serial_conn = serial.Serial(
-                port=port_name,
-                baudrate=int(baud_rate),
-                timeout=self.timeout,
-                write_timeout=self.timeout
-            )
-            self.port = port_name
+            self.serial_conn = serial.Serial()
+            self.serial_conn.port = clean_port
+            self.serial_conn.baudrate = int(baud_rate)
+            self.serial_conn.timeout = self.timeout
+            self.serial_conn.write_timeout = self.timeout
+            self.serial_conn.dtr = False
+            self.serial_conn.rts = False
+            self.serial_conn.open()
+            self.port = clean_port
             self.baud = int(baud_rate)
             self.is_connected = True
-            self.status_message = f"Connected to {port_name} at {baud_rate} baud. Awaiting sensor stream..."
+            self.status_message = f"Connected to {clean_port} at {baud_rate} baud. Awaiting sensor stream..."
             return True, self.status_message
         except Exception as e:
             self.is_connected = False
+            if self.serial_conn:
+                try:
+                    self.serial_conn.close()
+                except Exception:
+                    pass
             self.serial_conn = None
-            self.status_message = f"Failed to connect to {port_name}: {str(e)}"
+            err_str = str(e)
+            if "PermissionError" in err_str or "Access is denied" in err_str or "error 5" in err_str.lower():
+                self.status_message = (
+                    f"Port {clean_port} is busy or locked (Access Denied). "
+                    "⚠️ PLEASE CLOSE ARDUINO SERIAL MONITOR or any other serial software "
+                    "connected to this port, then try again."
+                )
+            elif "FileNotFoundError" in err_str or "could not open port" in err_str.lower():
+                self.status_message = f"Port {clean_port} not found or unplugged. Please check USB cable."
+            else:
+                self.status_message = f"Failed to connect to {clean_port}: {err_str}"
             return False, self.status_message
 
     def disconnect(self):
@@ -156,6 +281,15 @@ class SerialTelemetryGateway:
         """
         line = raw_line.strip()
         if not line:
+            return None
+
+        # Ignore informational boot, system, and diagnostic lines
+        line_lower = line.lower()
+        if any(line_lower.startswith(p) for p in [
+            "rst:", "configsip", "clk_drv", "mode:", "load:", "ho ", "entry ",
+            "nrf24", "emergency wi-fi", "mobile emergency", "ap ip", "packet #",
+            "---", "connected to", "ready", "listening", "hard resetting"
+        ]) or "listening on" in line_lower:
             return None
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -240,12 +374,33 @@ class SerialTelemetryGateway:
                     rain_mmh = round(float(raw_rain_adc), 1)
 
                 raw_temp = float(self._kv_buffer.get("temp", 22.0))
-                raw_tilt = float(self._kv_buffer.get("tilt", 0.5))
-                raw_vib = float(self._kv_buffer.get("accel", self._kv_buffer.get("vib", 0.08)))
+
+                # Handle Tilt from direct "tilt:" reading or infer from "acceleration:" transducer
+                if "tilt" in self._kv_buffer:
+                    raw_tilt = float(self._kv_buffer["tilt"])
+                elif "accel" in self._kv_buffer:
+                    a_val = float(self._kv_buffer["accel"])
+                    if abs(a_val) <= 1.05:
+                        # Convert 1g gravitational component to angular degrees
+                        raw_tilt = round(math.acos(max(-1.0, min(1.0, abs(a_val)))) * 180.0 / math.pi, 2)
+                    else:
+                        raw_tilt = round(abs(a_val), 2)
+                else:
+                    raw_tilt = 0.5
+
+                # Ground vibration from digital vibration sensor or seismic transducer
+                raw_vib_val = self._kv_buffer.get("vib", None)
+                if raw_vib_val is not None:
+                    raw_vib = 0.85 if (float(raw_vib_val) >= 1.0) else 0.02
+                elif "accel" in self._kv_buffer and "tilt" in self._kv_buffer:
+                    raw_vib = float(self._kv_buffer.get("accel", 0.02))
+                else:
+                    raw_vib = 0.02
+
                 self._kv_buffer.clear()
                 soil_c, temp_c, tilt_c, vib_c = self.convert_raw_sensor_values(raw_soil, raw_temp, raw_tilt, raw_vib)
                 return {
-                    "station_id": "GG-001",
+                    "station_id": "GG-002",
                     "soil_moisture_pct": soil_c,
                     "soil_adc": int(raw_soil) if raw_soil > 100 else None,
                     "temperature_c": temp_c,
@@ -298,7 +453,7 @@ class SerialTelemetryGateway:
                 calibrated_rain = round(raw_rain_val, 1)
 
                 return {
-                    "station_id": "GG-001",
+                    "station_id": "GG-002",
                     "soil_moisture_pct": soil_c,
                     "soil_adc": int(raw_soil) if raw_soil > 100 else None,
                     "temperature_c": temp_c,
@@ -341,7 +496,7 @@ class SerialTelemetryGateway:
 
                 # Legacy 4-field packet: mark rain_intensity_mmh as None (Unavailable), not 0.0!
                 return {
-                    "station_id": "GG-001",
+                    "station_id": "GG-002",
                     "soil_moisture_pct": soil_c,
                     "soil_adc": int(raw_soil) if raw_soil > 100 else None,
                     "temperature_c": temp_c,
@@ -380,10 +535,8 @@ class SerialTelemetryGateway:
                 lines_read += 1
                 if not raw_line:
                     continue
-                print(f"[SERIAL RAW] {raw_line}", flush=True)
                 parsed = self.validate_and_parse_line(raw_line)
                 if parsed:
-                    print(f"[SERIAL PARSED] {parsed}", flush=True)
                     latest_parsed = parsed
                     self.last_reading = parsed
                     self.last_packet_time = datetime.now(timezone.utc)
@@ -393,6 +546,23 @@ class SerialTelemetryGateway:
                         f"Soil={parsed['soil_moisture_pct']}%, Temp={parsed['temperature_c']}°C, "
                         f"Tilt={parsed['tilt_degrees']}°, Vib={parsed['vibration_pga']}g"
                     )
+
+            if latest_parsed is None and self.serial_conn and lines_read == 0:
+                # Try single non-blocking readline in case in_waiting was transitioning
+                raw_line = self.serial_conn.readline().decode('utf-8', errors='ignore').strip()
+                if raw_line:
+                    parsed = self.validate_and_parse_line(raw_line)
+                    if parsed:
+                        latest_parsed = parsed
+                        self.last_reading = parsed
+                        self.last_packet_time = datetime.now(timezone.utc)
+                        self.total_packets_received += 1
+                        self.status_message = (
+                            f"Receiving live telemetry from {parsed['station_id']}: "
+                            f"Soil={parsed['soil_moisture_pct']}%, Temp={parsed['temperature_c']}°C, "
+                            f"Tilt={parsed['tilt_degrees']}°, Vib={parsed['vibration_pga']}g"
+                        )
+
             return latest_parsed
         except Exception as e:
             self.status_message = f"Serial I/O error: {str(e)}"
@@ -435,3 +605,22 @@ class SerialTelemetryGateway:
             "status_message": self.status_message,
             "last_reading": self.last_reading
         }
+
+
+# ---------------------------------------------------------------------------
+# Global Process-Wide Singleton Gateway
+# ---------------------------------------------------------------------------
+_GLOBAL_GATEWAY: Optional[SerialTelemetryGateway] = None
+
+def get_hardware_gateway(default_port: str = "COM19", default_baud: int = 115200) -> SerialTelemetryGateway:
+    """
+    Returns the process-wide singleton SerialTelemetryGateway instance.
+    Prevents multiple Streamlit browser sessions/tabs from creating competing
+    PySerial handles on the same COM port, which triggers:
+    'SerialException: PermissionError(13, Access is denied)'.
+    """
+    global _GLOBAL_GATEWAY
+    if _GLOBAL_GATEWAY is None:
+        _GLOBAL_GATEWAY = SerialTelemetryGateway(default_port=default_port, default_baud=default_baud)
+    return _GLOBAL_GATEWAY
+

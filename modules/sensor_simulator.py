@@ -20,12 +20,13 @@ from datetime import datetime, timedelta
 from database.db import get_connection, log_telemetry
 
 # Initial default station coordinates and environmental baselines (NH-58 Himalayan Corridor)
+# Row 2 (GG-002) is Shivpuri (the single critical prototype node), others nominal.
 DEFAULT_STATIONS = [
-    {"id": "GG-001", "name": "NH-58 Mountain Pass", "corridor": "NH-58 km 42 (Byasi Gorge)", "lat": 30.1234, "lon": 78.4321, "soil_adc": 2100, "soil_moisture_pct": 38.5, "rain_adc": 2300, "rainfall_intensity_mmh": 6.0, "rain_intensity": 6.0, "tilt": 0.35, "vib": False, "acc_rain": 14.5, "temp_c": 11.2},
-    {"id": "GG-002", "name": "Valley Gorge Sector A", "corridor": "NH-58 km 58 (Kaudiyala)", "lat": 30.1567, "lon": 78.4890, "soil_adc": 1850, "soil_moisture_pct": 28.8, "rain_adc": 2050, "rainfall_intensity_mmh": 3.0, "rain_intensity": 3.0, "tilt": 0.22, "vib": False, "acc_rain": 9.2, "temp_c": 13.8},
-    {"id": "GG-003", "name": "Ridge Tunnel Link", "corridor": "NH-58 km 71 (Devprayag Confluence)", "lat": 30.2012, "lon": 78.5123, "soil_adc": 2350, "soil_moisture_pct": 48.0, "rain_adc": 2550, "rainfall_intensity_mmh": 9.0, "rain_intensity": 9.0, "tilt": 0.48, "vib": False, "acc_rain": 22.0, "temp_c": 8.4},
-    {"id": "GG-004", "name": "Highland Slope North", "corridor": "NH-58 km 89 (Kirtinagar Bluffs)", "lat": 30.2456, "lon": 78.5678, "soil_adc": 1980, "soil_moisture_pct": 33.8, "rain_adc": 2150, "rainfall_intensity_mmh": 4.2, "rain_intensity": 4.2, "tilt": 0.28, "vib": False, "acc_rain": 11.8, "temp_c": 10.6},
-    {"id": "GG-005", "name": "Alaknanda Escarpment", "corridor": "NH-58 km 105 (Srinagar Approach)", "lat": 30.2810, "lon": 78.6140, "soil_adc": 1720, "soil_moisture_pct": 23.8, "rain_adc": 1900, "rainfall_intensity_mmh": 1.2, "rain_intensity": 1.2, "tilt": 0.18, "vib": False, "acc_rain": 6.4, "temp_c": 15.2}
+    {"id": "GG-001", "name": "NH-58 Mountain Pass", "corridor": "NH-58 km 42 (Byasi Gorge)", "lat": 30.1234, "lon": 78.4321, "soil_adc": 1800, "soil_moisture_pct": 26.5, "rain_adc": 1500, "rainfall_intensity_mmh": 0.0, "rain_intensity": 0.0, "tilt": 0.25, "vib": False, "acc_rain": 3.5, "temp_c": 14.5},
+    {"id": "GG-002", "name": "Shivpuri", "corridor": "NH-58 km 58 (Shivpuri Sector)", "lat": 30.1567, "lon": 78.4890, "soil_adc": 3850, "soil_moisture_pct": 88.5, "rain_adc": 3750, "rainfall_intensity_mmh": 32.0, "rain_intensity": 32.0, "tilt": 3.85, "vib": True, "acc_rain": 38.2, "temp_c": 11.2},
+    {"id": "GG-003", "name": "Ridge Tunnel Link", "corridor": "NH-58 km 71 (Devprayag Confluence)", "lat": 30.2012, "lon": 78.5123, "soil_adc": 1750, "soil_moisture_pct": 24.0, "rain_adc": 1450, "rainfall_intensity_mmh": 0.0, "rain_intensity": 0.0, "tilt": 0.28, "vib": False, "acc_rain": 2.8, "temp_c": 12.8},
+    {"id": "GG-004", "name": "Highland Slope North", "corridor": "NH-58 km 89 (Kirtinagar Bluffs)", "lat": 30.2456, "lon": 78.5678, "soil_adc": 1650, "soil_moisture_pct": 21.0, "rain_adc": 1400, "rainfall_intensity_mmh": 0.0, "rain_intensity": 0.0, "tilt": 0.20, "vib": False, "acc_rain": 2.0, "temp_c": 15.0},
+    {"id": "GG-005", "name": "Alaknanda Escarpment", "corridor": "NH-58 km 105 (Srinagar Approach)", "lat": 30.2810, "lon": 78.6140, "soil_adc": 1600, "soil_moisture_pct": 19.5, "rain_adc": 1350, "rainfall_intensity_mmh": 0.0, "rain_intensity": 0.0, "tilt": 0.18, "vib": False, "acc_rain": 1.5, "temp_c": 16.2}
 ]
 
 def adc_to_moisture_pct(adc):
@@ -43,11 +44,10 @@ def adc_to_rainfall_intensity(adc):
         return round(2.0 + (adc - 1800) * 0.012, 1)
     return 0.0
 
-def generate_telemetry_tick(current_telemetry, emergency=False, emergency_target="GG-001"):
+def generate_telemetry_tick(current_telemetry, emergency=True, emergency_target="GG-002"):
     """
     Simulates one realistic telemetry step for all configured stations.
-    Mutates telemetry state with smooth natural random walks or acute emergency shifts.
-    Covers the 4 primary sensors: Soil Moisture, Temperature, Slope Tilt, and Vibration.
+    Only Shivpuri (GG-002) is critical during an alarm/emergency; all other 4 remain nominal.
     """
     updated = []
     now_iso = datetime.utcnow().isoformat()
@@ -57,31 +57,34 @@ def generate_telemetry_tick(current_telemetry, emergency=False, emergency_target
         is_target = emergency and (item["id"] == emergency_target)
 
         if is_target:
-            # Inject acute geological landslide precursors
-            item["soil_adc"] = min(3850, item["soil_adc"] + random.randint(30, 75))
-            item["rain_adc"] = min(3900, item["rain_adc"] + random.randint(35, 80))
-            item["temp_c"] = round(item.get("temp_c", 11.0) + random.uniform(-0.6, -0.1), 1)
-            item["tilt"] = round(min(4.8, item["tilt"] + random.uniform(0.08, 0.25)), 2)
-            item["tilt_rate"] = round(random.uniform(0.35, 0.72), 2)
+            # Acute geotechnical landslide precursors on Shivpuri (GG-002) with live dynamic micro-fluctuations
+            item["soil_adc"] = max(3600, min(3950, item.get("soil_adc", 3850) + random.randint(-10, 10)))
+            item["rain_adc"] = max(3500, min(3900, item.get("rain_adc", 3750) + random.randint(-10, 10)))
+            item["soil_moisture_pct"] = round(max(82.0, min(94.0, item.get("soil_moisture_pct", 88.5) + random.uniform(-0.2, 0.2))), 1)
+            item["rainfall_intensity_mmh"] = round(max(28.0, min(38.0, item.get("rainfall_intensity_mmh", 32.0) + random.uniform(-0.3, 0.3))), 1)
+            item["rain_intensity"] = item["rainfall_intensity_mmh"]
+            item["temp_c"] = round(max(10.5, min(12.5, item.get("temp_c", 11.2) + random.uniform(-0.1, 0.1))), 1)
+            item["tilt"] = round(max(3.60, min(4.10, item.get("tilt", 3.85) + random.uniform(-0.02, 0.02))), 2)
+            item["tilt_rate"] = round(max(0.40, min(0.65, item.get("tilt_rate", 0.55) + random.uniform(-0.01, 0.01))), 2)
             item["vib"] = True
-            item["vib_g"] = round(random.uniform(1.4, 2.8), 2)
-            item["acc_rain"] = round(item.get("acc_rain", 15.0) + random.uniform(0.8, 1.6), 1)
-            item["battery"] = round(random.uniform(91.0, 94.0), 1)
+            item["vib_g"] = round(max(1.50, min(2.10, item.get("vib_g", 1.85) + random.uniform(-0.04, 0.04))), 2)
+            item["acc_rain"] = round(item.get("acc_rain", 38.2) + 0.05, 1)
+            item["battery"] = 92.5
         else:
-            # Nominal environmental walk
-            item["soil_adc"] = max(1300, min(3300, item["soil_adc"] + random.randint(-15, 15)))
-            item["rain_adc"] = max(1400, min(3100, item["rain_adc"] + random.randint(-20, 20)))
-            item["temp_c"] = round(max(-5.0, min(35.0, item.get("temp_c", 12.0) + random.uniform(-0.15, 0.15))), 1)
-            item["tilt"] = round(max(0.05, min(1.2, item["tilt"] + random.uniform(-0.01, 0.01))), 2)
-            item["tilt_rate"] = round(random.uniform(0.01, 0.04), 2)
+            # Nominal environmental walk (Normal / Low status for all other 4 stations)
+            item["soil_adc"] = max(1500, min(2200, item.get("soil_adc", 1700) + random.randint(-10, 10)))
+            item["rain_adc"] = max(1200, min(1700, item.get("rain_adc", 1400) + random.randint(-10, 10)))
+            item["temp_c"] = round(max(8.0, min(25.0, item.get("temp_c", 14.0) + random.uniform(-0.1, 0.1))), 1)
+            item["tilt"] = round(max(0.12, min(0.35, item.get("tilt", 0.22) + random.uniform(-0.01, 0.01))), 2)
+            item["tilt_rate"] = 0.02
             item["vib"] = False
-            item["vib_g"] = round(random.uniform(0.02, 0.12), 2)
-            item["acc_rain"] = round(max(0.0, item.get("acc_rain", 10.0) + random.uniform(-0.05, 0.15)), 1)
-            item["battery"] = round(random.uniform(95.0, 99.5), 1)
+            item["vib_g"] = 0.02
+            item["acc_rain"] = round(max(0.0, min(5.0, item.get("acc_rain", 2.5) + random.uniform(-0.02, 0.05))), 1)
+            item["battery"] = 98.5
+            item["soil_moisture_pct"] = adc_to_moisture_pct(item["soil_adc"])
+            item["rainfall_intensity_mmh"] = 0.0
+            item["rain_intensity"] = 0.0
 
-        # Calibrate physical representations
-        item["soil_moisture_pct"] = adc_to_moisture_pct(item["soil_adc"])
-        item["rainfall_intensity_mmh"] = adc_to_rainfall_intensity(item["rain_adc"])
         item["timestamp"] = now_iso
         item["is_simulated"] = True
         updated.append(item)

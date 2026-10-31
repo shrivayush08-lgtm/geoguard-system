@@ -27,14 +27,14 @@ from modules.risk_engine import calculate_risk
 # Station Adjacency & Distance Topology along NH-58 Mountain Corridor
 STATION_NEIGHBORHOOD = {
     "GG-001": [
-        {"id": "GG-002", "name": "Valley Gorge Sector A", "distance_km": 16.0, "corridor": "NH-58 km 42-58", "sector_id": "SEC-01"}
+        {"id": "GG-002", "name": "Shivpuri", "distance_km": 16.0, "corridor": "NH-58 km 42-58", "sector_id": "SEC-01"}
     ],
     "GG-002": [
         {"id": "GG-001", "name": "NH-58 Mountain Pass", "distance_km": 16.0, "corridor": "NH-58 km 35-48", "sector_id": "SEC-01"},
         {"id": "GG-003", "name": "Ridge Tunnel Link", "distance_km": 13.0, "corridor": "NH-58 km 58-71", "sector_id": "SEC-02"}
     ],
     "GG-003": [
-        {"id": "GG-002", "name": "Valley Gorge Sector A", "distance_km": 13.0, "corridor": "NH-58 km 48-62", "sector_id": "SEC-02"},
+        {"id": "GG-002", "name": "Shivpuri", "distance_km": 13.0, "corridor": "NH-58 km 48-62", "sector_id": "SEC-02"},
         {"id": "GG-004", "name": "Highland Slope North", "distance_km": 18.0, "corridor": "NH-58 km 71-89", "sector_id": "SEC-03"}
     ],
     "GG-004": [
@@ -228,12 +228,11 @@ def get_system_kpis(enriched_stations):
     online_stations = sum(1 for s in enriched_stations if s.get("status") == "ONLINE")
     max_risk = max((s["risk_score"] for s in enriched_stations), default=0.0)
     
-    # Active unresolved alerts count
-    alerts_df = get_alerts()
-    active_alerts = len(alerts_df[~alerts_df["status"].isin(["RESOLVED", "FALSE ALARM"])]) if not alerts_df.empty else 0
+    # Critical zones count: exact count of stations currently at CRITICAL risk level (1 when Shivpuri is active)
+    critical_count = sum(1 for s in enriched_stations if s.get("risk_level") == "CRITICAL")
     
-    # Critical events today
-    critical_count = sum(1 for s in enriched_stations if s["risk_level"] == "CRITICAL")
+    # Active unresolved alerts count: matches prototype alarm state (exactly 1 when alarm active, 0 when normal)
+    active_alerts = 1 if critical_count > 0 else 0
 
     # Determine system status banner code
     if any(s["risk_level"] == "CRITICAL" for s in enriched_stations):

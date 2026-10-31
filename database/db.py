@@ -169,7 +169,7 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         default_stations = [
             ("GG-001", "NH-58 Mountain Pass", "NH-58 km 42 (Byasi Gorge)", 30.1234, 78.4321, 620.0, "North-West Slope (42°)", "ONLINE", datetime.utcnow().isoformat()),
-            ("GG-002", "Valley Gorge Sector A", "NH-58 km 58 (Kaudiyala)", 30.1567, 78.4890, 710.0, "South Escarpment (38°)", "ONLINE", datetime.utcnow().isoformat()),
+            ("GG-002", "Shivpuri", "NH-58 km 58 (Shivpuri Sector)", 30.1567, 78.4890, 710.0, "South Escarpment (38°)", "ONLINE", datetime.utcnow().isoformat()),
             ("GG-003", "Ridge Tunnel Link", "NH-58 km 71 (Devprayag Confluence)", 30.2012, 78.5123, 830.0, "East Ridge Cleave (45°)", "ONLINE", datetime.utcnow().isoformat()),
             ("GG-004", "Highland Slope North", "NH-58 km 89 (Kirtinagar Bluffs)", 30.2456, 78.5678, 950.0, "North Bluff Wall (50°)", "ONLINE", datetime.utcnow().isoformat()),
             ("GG-005", "Alaknanda Escarpment", "NH-58 km 105 (Srinagar Approach)", 30.2810, 78.6140, 1040.0, "Valley Terrace Cut (35°)", "ONLINE", datetime.utcnow().isoformat()),
@@ -180,7 +180,7 @@ def init_db():
     cursor.execute("SELECT COUNT(*) FROM road_sections")
     if cursor.fetchone()[0] == 0:
         default_sections = [
-            ("SEC-01", "Shivpuri - Byasi Mountain Corridor", "NH-58 km 35-48", "GG-001", "OPEN", "LOW", 30.1050, 78.3950, 30.1380, 78.4550, "Clear highway conditions, optimal dry friction.", datetime.utcnow().isoformat(), "Highway Inspector"),
+            ("SEC-01", "Shivpuri - Byasi Mountain Corridor", "NH-58 km 35-48", "GG-001", "CLOSED", "CRITICAL", 30.1050, 78.3950, 30.1380, 78.4550, "Critical slope displacement detected. Sector closed to vehicular transit; divert via NH-707A.", datetime.utcnow().isoformat(), "Inspector BRO Highway Command"),
             ("SEC-02", "Byasi - Kaudiyala Gorge Run", "NH-58 km 48-62", "GG-002", "OPEN", "LOW", 30.1380, 78.4550, 30.1750, 78.4980, "Active drainage channels clear; debris traps nominal.", datetime.utcnow().isoformat(), "Highway Inspector"),
             ("SEC-03", "Kaudiyala - Devprayag Bridge Cut", "NH-58 km 62-78", "GG-003", "OPEN", "LOW", 30.1750, 78.4980, 30.2200, 78.5350, "Bridge foundation telemetry secure; slope nets intact.", datetime.utcnow().isoformat(), "Highway Inspector"),
             ("SEC-04", "Devprayag - Kirtinagar Ridge", "NH-58 km 78-95", "GG-004", "OPEN", "LOW", 30.2200, 78.5350, 30.2650, 78.5900, "Minor loose gravel clearing completed.", datetime.utcnow().isoformat(), "Highway Inspector"),

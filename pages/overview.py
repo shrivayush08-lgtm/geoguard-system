@@ -16,6 +16,7 @@ Renders:
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import datetime
 from modules.ui import (
     render_hud_kpi,
     render_hud_banner,
@@ -222,35 +223,36 @@ def render_overview_page(enriched_stations):
         st.markdown("<div class='hud-eyebrow'>EVENT LOG</div>", unsafe_allow_html=True)
         st.markdown("<h3 style='margin-top:0;'>Live Incident Dispatch Stream</h3>", unsafe_allow_html=True)
         
-        alerts_df = get_alerts(limit=4)
-        if alerts_df.empty:
-            st.info("All highway sectors operating within nominal geotechnical tolerances. No active incident alerts.")
-        else:
-            for _, row in alerts_df.iterrows():
-                badge_class = (
-                    "hud-badge-critical" if "CRITICAL" in row["risk_level"] 
-                    else ("hud-badge-high" if "HIGH" in row["risk_level"] 
-                    else "hud-badge-moderate")
-                )
-                border_col = "#EF4444" if "CRITICAL" in row["risk_level"] else ("#F97316" if "HIGH" in row["risk_level"] else "#F59E0B")
-                
-                render_html(f"""
-                <div style='background: #111827; border-left: 3px solid {border_col}; border-top: 1px solid #1F2937; border-right: 1px solid #1F2937; border-bottom: 1px solid #1F2937; border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;'>
-                    <div style='display: flex; justify-content: space-between; align-items: center;'>
-                        <div>
-                            <span class='hud-badge {badge_class}'>{row['risk_level']}</span>
-                            <span style='margin-left: 8px; font-weight: 600; color: #F8FAFC;'>Sector Node {row['station_id']}</span>
-                        </div>
-                        <span class='font-mono' style='font-size: 11px; color: #64748B;'>{row['timestamp']}</span>
+        # Single active alarm prototype showcase: exactly 1 critical incident card for Shivpuri
+        crit_stations = [s for s in enriched_stations if s.get("risk_level") == "CRITICAL"]
+        
+        if crit_stations:
+            crit_stn = crit_stations[0]
+            stn_name = crit_stn.get("name", "Shivpuri")
+            now_str = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+            tilt_val = crit_stn.get("tilt", 3.85)
+            factors = crit_stn.get("factors", [])
+            alert_detail = factors[0] if factors else f"Acute slope slip / shear plane failure ({tilt_val:.2f}° displacement)"
+            
+            render_html(f"""
+            <div style='background: #111827; border-left: 3px solid #EF4444; border-top: 1px solid #1F2937; border-right: 1px solid #1F2937; border-bottom: 1px solid #1F2937; border-radius: 6px; padding: 12px 16px; margin-bottom: 8px;'>
+                <div style='display: flex; justify-content: space-between; align-items: center;'>
+                    <div>
+                        <span class='hud-badge hud-badge-critical'>CRITICAL</span>
+                        <span style='margin-left: 8px; font-weight: 700; color: #F8FAFC; font-size: 14px;'>{stn_name}</span>
                     </div>
-                    <div style='font-size: 13px; color: #E2E8F0; margin-top: 5px;'>
-                        {row['reason']}
-                    </div>
-                    <div class='font-mono' style='font-size: 10px; color: #94A3B8; margin-top: 4px;'>
-                        Status: <b style='color:#38BDF8;'>{row['status']}</b> • Assigned: {row['assigned_team'] or 'Awaiting Dispatch'}
-                    </div>
+                    <span class='font-mono' style='font-size: 11px; color: #64748B;'>{now_str}</span>
                 </div>
-                """)
+                <div style='font-size: 13px; color: #E2E8F0; margin-top: 6px;'>
+                    Automated Alert: {alert_detail}
+                </div>
+                <div class='font-mono' style='font-size: 10px; color: #94A3B8; margin-top: 6px;'>
+                    Status: <b style='color:#38BDF8;'>NEW</b> • Assigned: Awaiting Dispatch
+                </div>
+            </div>
+            """)
+        else:
+            st.info("All highway sectors operating within nominal geotechnical tolerances. No active incident alerts.")
 
     with b_col2:
         st.markdown("<div class='hud-eyebrow'>TRAFFIC ADVISORY DIRECTIVE</div>", unsafe_allow_html=True)
@@ -262,7 +264,7 @@ def render_overview_page(enriched_stations):
         if has_crit:
             adv_color = "#EF4444"
             adv_title = "RED ADVISORY: CORRIDOR TRAFFIC RESTRICTION"
-            adv_desc = "NH-58 Byasi Gorge sector experiencing critical displacement. Divert all non-emergency traffic via Chamba-New Tehri expressway."
+            adv_desc = "NH-58 Shivpuri sector experiencing critical displacement. Divert all non-emergency traffic via Chamba-New Tehri expressway."
         elif has_high:
             adv_color = "#F97316"
             adv_title = "ORANGE ADVISORY: SPEED REDUCTION REQUIRED"
