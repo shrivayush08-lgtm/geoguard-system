@@ -21,6 +21,7 @@ Thumbs.db
 # Database
 *.db
 data/*.db
+cloudflared.exe
 
 # Scratch and temp files
 scratch/
