@@ -44,6 +44,7 @@ def render_overview_page(enriched_stations):
 
     # 3. Top Row: 6 KPI Metric Cards
     st.markdown("<div class='hud-eyebrow'>CORRIDOR TELEMETRY OVERVIEW</div>", unsafe_allow_html=True)
+    st.markdown("<h2 style='margin-top:0; margin-bottom: 12px; font-weight: 700;'>Highway Control</h2>", unsafe_allow_html=True)
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     
     with c1:

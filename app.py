@@ -104,7 +104,7 @@ seed_historical_telemetry_if_needed()
 # SECTION 4: Streamlit Page Configuration & Styling Injection
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="GeoGuard | Highway Control Center",
+    page_title="GeoGuard | Highway Control",
     page_icon="🛡️",
     layout="wide",
     initial_sidebar_state="expanded"

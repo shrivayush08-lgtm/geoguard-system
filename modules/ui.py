@@ -301,7 +301,7 @@ def render_hud_header(operating_mode="SIMULATION", total_stations=5, online_stat
             <div>
                 <div class='hud-eyebrow'>NATIONAL HIGHWAY CORRIDOR 58 • GEOTECHNICAL MONITORING</div>
                 <h1 style='margin:0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em;'>
-                    Highway Control Center
+                    Highway Control
                 </h1>
             </div>
         </div>
