@@ -200,43 +200,47 @@ def normalize_temperature_risk(
     return round(max(0.0, min(100.0, score)), 1)
 
 
+
 def normalize_slope_tilt_risk(
     tilt_deg: Optional[float],
     tilt_rate_deg_h: float = 0.0,
     cfg: Optional[Dict[str, Any]] = None
 ) -> Optional[float]:
     """
-    Normalizes slope inclinometer angular displacement into a 0–100 risk sub-score.
-    Physical Calibration (Himalayan Model Specification):
-    - Initial resting slope angle on mountain pass is ~60.0°.
-    - An angular decrease of > 5.0° (i.e. tilt < 55.0°, e.g. 50°, 44°, 17°, 0.9°) indicates acute shear failure.
+    Normalizes angular displacement from the calibrated baseline.
+    These are displacement readings, NOT the absolute mountain slope angle.
+
+    Demonstration thresholds:
+    - <= 0.8°: Normal
+    - > 0.8° to 2.0°: Warning
+    - > 2.0° to 3.0°: Elevated
+    - >= 3.0°: Critical displacement
     """
     c = cfg or DEFAULT_CONFIG
+
     if tilt_deg is None:
         return None
 
-    val = float(tilt_deg)
+    val = abs(float(tilt_deg))
 
-    # 60.0° resting mountain baseline logic:
-    # Any decrease from 60° by > 5° (tilt < 55.0°) is an acute shear plane failure
-    drop_from_60 = max(0.0, 60.0 - val)
+    baseline = c["tilt_baseline_max"]
+    warning = c["tilt_warning_max"]
+    critical = c["tilt_critical_min"]
 
-    if drop_from_60 <= 2.0:
-        # Tilt 58° to 62°: Normal baseline stability (0 to 25 pts)
-        base = (drop_from_60 / 2.0) * 25.0
-    elif drop_from_60 <= 5.0:
-        # Tilt 55° to 58°: Minor creep / elevated strain (25 to 65 pts)
-        base = 25.0 + ((drop_from_60 - 2.0) / 3.0) * 40.0
+    if val <= baseline:
+        base = (val / baseline) * 20.0
+    elif val <= warning:
+        base = 20.0 + ((val - baseline) / (warning - baseline)) * 35.0
+    elif val < critical:
+        base = 55.0 + ((val - warning) / (critical - warning)) * 25.0
     else:
-        # Tilt < 55°: ACUTE CRITICAL SHEAR FAILURE (> 5° drop, e.g. 50°, 44°, 17°, 0.9°)
-        # Immediately scores 80 to 100 points (CRITICAL HAZARD)
-        base = 80.0 + min(20.0, ((drop_from_60 - 5.0) / 25.0) * 20.0)
+        base = 80.0 + min(20.0, ((val - critical) / 1.8) * 20.0)
 
-    # Dynamic displacement rate factor
-    rate = abs(float(tilt_rate_deg_h)) if tilt_rate_deg_h else 0.0
+    rate = abs(float(tilt_rate_deg_h or 0.0))
     rate_boost = min(20.0, rate * 30.0)
 
     return round(max(0.0, min(100.0, base + rate_boost)), 1)
+
 
 
 def normalize_vibration_risk(
@@ -434,20 +438,47 @@ def calculate_five_sensor_risk(
     )
     overall_score = max(0.0, min(100.0, overall_score))
 
-    # 4b. Acute Geotechnical Hazard Escalation (60° baseline calibration)
-    # When slope drops > 5° from 60° (tilt < 55.0°) with rain or soil saturation,
-    # or suffers severe shear failure (< 50.0°), escalate risk index.
-    is_tilt_failure = (tilt_degrees is not None and float(tilt_degrees) < 55.0)
-    is_severe_tilt_drop = (tilt_degrees is not None and float(tilt_degrees) < 50.0)
-    is_rain_active = (actual_rain is not None and float(actual_rain) >= 15.0) or (rain_adc is not None and rain_adc < 1200)
-    is_soil_saturated = (soil_moisture_pct is not None and float(soil_moisture_pct) >= 45.0) or (soil_raw_adc is not None and soil_raw_adc < 1500)
+    
+    # 4b. Acute Geotechnical Hazard Escalation
+    # Tilt displacement is measured from a calibrated baseline,
+    # not as an absolute mountain slope angle.
 
-    if (is_tilt_failure and (is_rain_active or is_soil_saturated)) or (is_rain_active and is_soil_saturated) or is_severe_tilt_drop:
+    is_tilt_critical = (
+        tilt_degrees is not None
+        and abs(float(tilt_degrees)) >= cfg["tilt_critical_min"]
+    )
+
+    is_tilt_warning = (
+        tilt_degrees is not None
+        and abs(float(tilt_degrees)) > cfg["tilt_baseline_max"]
+    )
+
+    is_rain_active = (
+        actual_rain is not None and float(actual_rain) >= 25.0
+    )
+
+    is_soil_saturated = (
+        soil_moisture_pct is not None
+        and float(soil_moisture_pct) >= 70.0
+    )
+
+    is_fast_slope_movement = (
+        tilt_rate_deg_h is not None
+        and abs(float(tilt_rate_deg_h)) >= 0.30
+    )
+
+    if (
+        is_tilt_critical
+        and (is_rain_active or is_soil_saturated or is_fast_slope_movement)
+    ):
         overall_score = max(overall_score, 85.0)
-    elif is_tilt_failure or (slope_score is not None and slope_score >= 80.0):
+
+    elif (
+        is_tilt_critical
+        or (is_tilt_warning and is_fast_slope_movement)
+    ):
         overall_score = max(overall_score, 72.0)
-    elif (slope_score is not None and slope_score >= 50.0) or (tilt_degrees is not None and float(tilt_degrees) < 58.0):
-        overall_score = max(overall_score, 45.0)
+
 
     # 5. Exact Classification Rule
     if overall_score < 40.0:
@@ -471,13 +502,19 @@ def calculate_five_sensor_risk(
         immediate_warning = True
         immediate_triggers.append(f"Torrential rain intensity ({float(actual_rain):.1f} mm/hr)")
     
-    drop_from_60 = max(0.0, 60.0 - float(tilt_degrees)) if tilt_degrees is not None else 0.0
-    if tilt_degrees is not None and (drop_from_60 >= 5.0 or float(tilt_degrees) < 55.0):
-        immediate_warning = True
-        immediate_triggers.append(f"Acute slope slip / shear plane failure ({float(tilt_degrees):.2f}°, dropped {drop_from_60:.1f}° from 60° baseline)")
+    if tilt_degrees is not None:
+        tilt_value = abs(float(tilt_degrees))
+        if tilt_value >= cfg["tilt_critical_min"]:
+            immediate_warning = True
+            immediate_triggers.append(
+                f"Critical slope displacement ({tilt_value:.2f}°)"
+            )
+
     if tilt_rate_deg_h is not None and abs(float(tilt_rate_deg_h)) >= 0.30:
         immediate_warning = True
-        immediate_triggers.append(f"Accelerated slope creep rate (+{float(tilt_rate_deg_h):.2f}°/h)")
+        immediate_triggers.append(
+            f"Accelerated slope creep rate ({abs(float(tilt_rate_deg_h)):.2f}°/h)"
+        )
     if vibration_detected or (vibration_pga is not None and float(vibration_pga) >= 0.35):
         immediate_warning = True
         immediate_triggers.append(f"Abnormal seismic ground shock ({float(vibration_pga or 0.0):.2f}g PGA)")
@@ -630,16 +667,43 @@ def calculate_four_sensor_risk(
     )
     overall_score = max(0.0, min(100.0, overall_score))
 
-    # 4b. Acute Geotechnical Hazard Escalation (60° baseline calibration)
-    is_tilt_failure = (tilt_degrees is not None and float(tilt_degrees) < 55.0)
-    is_severe_tilt_drop = (tilt_degrees is not None and float(tilt_degrees) < 50.0)
-    is_soil_saturated = (soil_moisture_pct is not None and float(soil_moisture_pct) >= 45.0) or (soil_raw_adc is not None and soil_raw_adc < 1500)
+    # 4b. Acute Geotechnical Hazard Escalation
+    # Tilt represents displacement from calibrated baseline,
+    # NOT the absolute mountain slope angle.
 
-    if (is_tilt_failure and is_soil_saturated) or is_severe_tilt_drop:
+    is_tilt_critical = (
+        tilt_degrees is not None
+        and abs(float(tilt_degrees)) >= cfg["tilt_critical_min"]
+    )
+
+    is_tilt_warning = (
+        tilt_degrees is not None
+        and abs(float(tilt_degrees)) > cfg["tilt_baseline_max"]
+    )
+
+    is_soil_saturated = (
+        soil_moisture_pct is not None
+        and float(soil_moisture_pct) >= 70.0
+    )
+
+    is_fast_slope_movement = (
+        tilt_rate_deg_h is not None
+        and abs(float(tilt_rate_deg_h)) >= 0.30
+    )
+
+    if (
+        is_tilt_critical
+        and (is_soil_saturated or is_fast_slope_movement)
+    ):
         overall_score = max(overall_score, 85.0)
-    elif is_tilt_failure or (slope_score is not None and slope_score >= 80.0):
+
+    elif (
+        is_tilt_critical
+        or (is_tilt_warning and is_fast_slope_movement)
+    ):
         overall_score = max(overall_score, 72.0)
-    elif (slope_score is not None and slope_score >= 50.0) or (tilt_degrees is not None and float(tilt_degrees) < 58.0):
+
+    elif slope_score is not None and slope_score >= 50.0:
         overall_score = max(overall_score, 45.0)
 
     # 5. Exact Classification Rule
@@ -664,13 +728,20 @@ def calculate_four_sensor_risk(
     immediate_warning = False
     immediate_triggers = []
 
-    drop_from_60 = max(0.0, 60.0 - float(tilt_degrees)) if tilt_degrees is not None else 0.0
-    if tilt_degrees is not None and (drop_from_60 >= 5.0 or float(tilt_degrees) < 55.0):
-        immediate_warning = True
-        immediate_triggers.append(f"Acute slope slip / shear plane failure ({float(tilt_degrees):.2f}°, dropped {drop_from_60:.1f}° from 60° baseline)")
+    if tilt_degrees is not None:
+        tilt_value = abs(float(tilt_degrees))
+
+        if tilt_value >= cfg["tilt_critical_min"]:
+            immediate_warning = True
+            immediate_triggers.append(
+                f"Critical slope displacement ({tilt_value:.2f}°)"
+            )
+
     if tilt_rate_deg_h is not None and abs(float(tilt_rate_deg_h)) >= 0.30:
         immediate_warning = True
-        immediate_triggers.append(f"Accelerated slope creep rate (+{float(tilt_rate_deg_h):.2f}°/h)")
+        immediate_triggers.append(
+            f"Accelerated slope creep rate ({abs(float(tilt_rate_deg_h)):.2f}°/h)"
+        )
     if vibration_detected or (vibration_pga is not None and float(vibration_pga) >= 0.35):
         immediate_warning = True
         immediate_triggers.append(f"Abnormal seismic ground shock ({float(vibration_pga or 0.0):.2f}g PGA)")

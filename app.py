@@ -1,102 +1,86 @@
 """
 =============================================================================
-PROJECT: GEOGUARD — OFF-GRID HIGHWAY LANDSLIDE EARLY WARNING
-         AND AUTOMATED HIGHWAY INTERLOCK SYSTEM
+PROJECT: GEOGUARD — HIGHWAY INTELLIGENCE & LANDSLIDE EARLY WARNING SYSTEM
 File: app.py
 Purpose: Main Application Entry Point, Navigation Router & Real-Time Orchestrator
 =============================================================================
-COMPETITION: Smart India Hackathon (SIH)
-TARGET CORRIDOR: NH-58 Himalayan Highway (Rishikesh–Devprayag–Joshimath)
-
 WHERE THIS CODE IS USED AND WHAT IT DOES:
 -----------------------------------------------------------------------------
 1. System Initialization:
-   - Calls `init_db()` to bootstrap SQLite tables (stations, alerts, telemetry, roads).
+   - Calls `init_db()` to create SQLite tables (stations, alerts, telemetry, roads).
    - Calls `seed_historical_telemetry_if_needed()` to preload 24 hours of baseline
-     telemetry so all charts, sparklines, and maps are immediately functional.
-2. Page Configuration & Professional Geotechnical Theme:
-   - Sets wide layout, browser title, and shield icon via `st.set_page_config()`.
-   - Injects custom dark command-center HUD stylesheet via `inject_custom_css()`.
+     telemetry so all charts and metrics are immediately populated.
+2. Page Configuration & Theme:
+   - Sets wide layout, browser tab title, and shield icon via `st.set_page_config()`.
+   - Injects the custom command-center HUD styling via `inject_custom_css()`.
 3. Session State Management:
    - Manages live telemetry states, operating mode (Simulation vs Hardware ESP32),
-     the Highway Interlock state machine, and communication gateways.
-4. Serial & Telemetry Ingestion:
-   - Simulation Mode: executes smooth random walk or deterministic SIH test scenarios
-     (Low Risk, Moderate Risk, Critical Risk, ESP32 Surge, Reset).
-   - Hardware Mode: reads live 4-value CSV or JSON frames from physical ESP32 via
-     non-blocking `SerialTelemetryGateway`.
-5. 4-Factor Composite Landslide Risk & Actuator Interlock:
-   - Evaluates 0-100 risk index: Overall = (Soil*0.25 + Temp*0.25 + Slope*0.25 + Vib*0.25).
-   - Tripping threshold > 70.0: closes simulated boom barrier, sets traffic signals to RED,
-     and logs structured incident record to emergency agencies.
+     emergency drill flags, and communication gateways.
+4. Real-time Telemetry Ingestion:
+   - In Simulation Mode: advances synthetic sensor measurements via `generate_telemetry_tick()`.
+   - In Hardware Mode: reads live JSON packets from physical ESP32 via `SerialTelemetryGateway`.
+5. Risk & Anomaly Assessment:
+   - Enriches all stations using `enrich_station_telemetry()` to compute 0-100 risk indices.
+   - Automatically logs critical alerts with a 10-minute cooldown to prevent spam.
 6. Navigation Routing:
-   - Preserves the 7 core operational views:
-     1. Overview Dashboard
-     2. Live Sensor Monitoring & Interlock Center
-     3. Geographic Risk Map & Live GPS Assets
-     4. Alert Center
-     5. Highway Safety & Road Closures
-     6. Reports & Downloads
-     7. Settings
+   - Provides a streamlined 7-page menu:
+     1. Overview Dashboard (System overview, KPIs, and corridor status)
+     2. Live Sensor Monitoring (ESP32 stream, threshold vs average, nearby alarms)
+     3. Geographic Risk Map (GIS map with colored highway sectors)
+     4. Alert Center (Active incident queue & operator management)
+     5. Highway Safety & Road Closures (Roadway conditions & detour advisories)
+     6. Reports & Downloads (CSV exports & printable incident dossiers)
+     7. Settings (Threshold configurations & system parameters)
 =============================================================================
 """
 
 import streamlit as st
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # SECTION 1: Database & Backend Modules Initialization
 # ---------------------------------------------------------------------------
+# These imports handle SQLite persistence, styling, simulation, and data access.
 from database.db import (
-    init_db,           # Initializes SQLite database schema
-    log_alert,         # Logs alerts with cooldown & audit trail
+    init_db,           # Initializes SQLite database tables
+    log_alert,         # Logs alerts with duplicate prevention
+    log_risk_assessment, # Persists risk assessment calculations
     log_telemetry,     # Persists sensor measurements
-    get_config         # Reads persistent configuration parameters
+    get_config         # Reads persistent system settings
 )
 from modules.ui import (
-    inject_custom_css, # Injects dark command center HUD styles & geotechnical background
-    render_hud_header, # Renders top telemetry status header
-    render_disclaimer  # Displays the required operational safety disclaimer
+    inject_custom_css, # Injects dark command center HUD styles
+    render_hud_header, # Renders top military-style telemetry header
+    render_disclaimer  # Displays the required safety disclaimer
 )
 from modules.sensor_simulator import (
     DEFAULT_STATIONS,                    # Default 5 NH-58 monitoring stations
-    generate_telemetry_tick,             # Generates realistic environmental walks
-    seed_historical_telemetry_if_needed  # Seeds 24h baseline if database is fresh
+    generate_telemetry_tick,             # Generates realistic physical sensor walks
+    seed_historical_telemetry_if_needed  # Seeds 24h of history if database is fresh
 )
 from modules.data_store import (
-    enrich_station_telemetry, # Calculates multi-factor risk scores across all stations
+    enrich_station_telemetry, # Calculates geotechnical risk for all stations
     get_system_kpis           # Computes active stations, alerts, and system health
 )
-from modules.hardware_reader import SerialTelemetryGateway # Non-blocking PySerial ESP32 gateway
-from modules.interlock import HighwayInterlockSystem       # Highway interlock & dispatch logger
-from modules.gps_simulator import (
-    DEFAULT_GPS_UNITS,  # Default 5 mobile emergency response & patrol units
-    simulate_gps_tick   # Kinematic waypoint advancement along NH-58 corridor
-)
-from modules.gps_reader import GPSHardwareGateway # Modular real GPS telemetry gateway
+from modules.hardware_reader import SerialTelemetryGateway # PySerial ESP32 gateway
 
 # ---------------------------------------------------------------------------
-# SECTION 2: Page View Renderers (Streamlined 7 Core Operational Pages)
+# SECTION 2: Page View Renderers (Streamlined 7 Core Pages)
 # ---------------------------------------------------------------------------
-import importlib
-import pages.live_sensor
-try:
-    importlib.reload(pages.live_sensor)
-except Exception:
-    pass
-
+# We import only the 7 active operational views requested by the user.
 from pages.overview import render_overview_page             # 1. Overview Dashboard
-from pages.live_sensor import render_live_sensor_page       # 2. Live Sensor Monitoring & Interlock Center
-from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map & Live GPS Assets
-from pages.alert_center import render_alert_center_page     # 4. Alert Center & Incident Queue
+from pages.live_sensor import render_live_sensor_page       # 2. Live Sensor Monitoring & ESP32 Alarm
+from pages.geographic_map import render_geographic_map_page # 3. Geographic Risk Map
+from pages.alert_center import render_alert_center_page     # 4. Alert Center & Audit Trail
 from pages.highway_safety import render_highway_safety_page # 5. Highway Safety & Road Closures
 from pages.reports import render_reports_page               # 6. Reports & Data Downloads
-from pages.settings import render_settings_page             # 7. System Settings & Calibration
+from pages.settings import render_settings_page             # 7. System Settings & Configuration
 
 # ---------------------------------------------------------------------------
 # SECTION 3: Persistent Database Bootstrapping
 # ---------------------------------------------------------------------------
+# Creates all required tables if they do not exist and populates initial records.
 init_db()
 seed_historical_telemetry_if_needed()
 
@@ -110,32 +94,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Apply custom dark command-center HUD styling and geotechnical background
+# Apply the custom dark command-center stylesheet
 inject_custom_css()
 
 # ---------------------------------------------------------------------------
 # SECTION 5: Global Session State Management
 # ---------------------------------------------------------------------------
+# Ensures application variables persist smoothly across Streamlit reruns.
 if 'stations_telemetry' not in st.session_state:
     st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
-
-if 'gps_units' not in st.session_state:
-    st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
-
-if 'operating_mode' not in st.session_state:
-    st.session_state.operating_mode = "SIMULATION"
-
-if 'serial_gateway' not in st.session_state or not hasattr(st.session_state.serial_gateway, 'auto_detect_esp32'):
-    st.session_state.serial_gateway = SerialTelemetryGateway(default_port="COM3", default_baud=115200)
-    init_port, _ = SerialTelemetryGateway.auto_detect_esp32()
-    if init_port:
-        st.session_state.serial_gateway.port = init_port
-
-if 'gps_gateway' not in st.session_state:
-    st.session_state.gps_gateway = GPSHardwareGateway()
-
-if 'interlock_system' not in st.session_state:
-    st.session_state.interlock_system = HighwayInterlockSystem(hysteresis_ticks_required=3)
 
 if 'emergency' not in st.session_state:
     st.session_state.emergency = False
@@ -143,107 +110,50 @@ if 'emergency' not in st.session_state:
 if 'emergency_target' not in st.session_state:
     st.session_state.emergency_target = "GG-001"
 
+if 'operating_mode' not in st.session_state:
+    st.session_state.operating_mode = "SIMULATION"
+
+if 'dispatch_status' not in st.session_state:
+    st.session_state.dispatch_status = "Standby — All Sector Rescue Units Nominal"
+
+if 'serial_gateway' not in st.session_state:
+    st.session_state.serial_gateway = SerialTelemetryGateway()
+
 if 'auto_tick' not in st.session_state:
     st.session_state.auto_tick = False
 
 # ---------------------------------------------------------------------------
-# SECTION 6: Live Telemetry Ingestion (Simulation Stream vs Physical Hardware)
+# SECTION 6: Live Telemetry Ingestion (Simulation or Physical ESP32)
 # ---------------------------------------------------------------------------
+# In Simulation Mode: Updates sensor readings with smooth environmental random walks.
+# In Hardware Mode: Reads incoming newline-delimited JSON packets from USB serial.
 if st.session_state.operating_mode == "SIMULATION":
-    # 1. Advance fixed geotechnical monitoring stations
     st.session_state.stations_telemetry = generate_telemetry_tick(
         st.session_state.stations_telemetry,
         emergency=st.session_state.emergency,
         emergency_target=st.session_state.emergency_target
     )
-    # 2. Advance mobile GPS asset tracking fleet along NH-58 corridor waypoints
-    st.session_state.gps_units = simulate_gps_tick(
-        st.session_state.gps_units,
-        elapsed_sec=3.0,
-        emergency=st.session_state.emergency,
-        emergency_target=st.session_state.emergency_target
-    )
 elif st.session_state.operating_mode == "HARDWARE":
-    # 1. Read fixed geotechnical station packet via USB serial (CSV or JSON)
-    gw = st.session_state.serial_gateway
-    if not gw.is_connected and st.session_state.get("auto_detect_esp", True):
-        # Auto-detect and connect to ESP32 on whatever USB port it is plugged into
-        now_ts = time.time()
-        if now_ts - getattr(gw, "last_auto_scan_time", 0.0) > 2.5:
-            gw.last_auto_scan_time = now_ts
-            detected_p, _ = gw.auto_detect_esp32()
-            if detected_p:
-                gw.connect(detected_p, getattr(gw, "baud", 115200))
+    packet = st.session_state.serial_gateway.read_latest_packet()
+    if packet:
+        stn_id = packet.get("station_id")
+        for s in st.session_state.stations_telemetry:
+            if s["id"] == stn_id:
+                s["soil_adc"] = packet.get("soil_moisture_adc", s["soil_adc"])
+                s["rain_adc"] = packet.get("rain_sensor_adc", s["rain_adc"])
+                s["tilt"] = packet.get("tilt_degrees", s["tilt"])
+                s["vib"] = packet.get("vibration_detected", s["vib"])
+                s["temp_c"] = packet.get("temperature_c", s.get("temp_c", 15.0))
+                s["is_simulated"] = False
 
-    if gw.is_connected:
-        packet = gw.read_latest_packet()
-        if packet:
-            stn_id = packet.get("station_id", "GG-001")
-            for s in st.session_state.stations_telemetry:
-                if s["id"] == stn_id:
-                    s["soil_moisture_pct"] = packet.get("soil_moisture_pct", s.get("soil_moisture_pct", 35.0))
-                    if "soil_adc" in packet and packet["soil_adc"] is not None:
-                        s["soil_adc"] = packet["soil_adc"]
-                    s["temp_c"] = packet.get("temperature_c", s.get("temp_c", 15.0))
-                    s["temperature_c"] = s["temp_c"]
-                    s["tilt"] = packet.get("tilt_degrees", s.get("tilt", 0.3))
-                    s["tilt_degrees"] = s["tilt"]
-                    s["vib"] = (packet.get("vibration_pga", 0.0) > 0.15)
-                    s["vib_g"] = packet.get("vibration_pga", s.get("vib_g", 0.02))
-                    s["rainfall_intensity_mmh"] = packet.get("rain_intensity_mmh")
-                    s["rain_intensity"] = s["rainfall_intensity_mmh"]
-                    s["is_simulated"] = False
-                    s["is_valid"] = packet.get("is_valid", True)
-                    s["timestamp"] = packet.get("timestamp", datetime.now(timezone.utc).isoformat())
-
-            # Persist incoming real hardware packet into SQLite history
-            try:
-                log_telemetry({
-                    "timestamp": packet.get("timestamp", datetime.utcnow().isoformat()),
-                    "station_id": stn_id,
-                    "soil_adc": packet.get("soil_adc"),
-                    "soil_moisture_pct": packet.get("soil_moisture_pct"),
-                    "temperature_c": packet.get("temperature_c"),
-                    "rain_adc": None,
-                    "rainfall_intensity_mmh": packet.get("rain_intensity_mmh"),
-                    "rain_acc_24h_mm": 0.0,
-                    "tilt_degrees": packet.get("tilt_degrees"),
-                    "tilt_rate_deg_h": 0.0,
-                    "vibration_detected": 1 if (packet.get("vibration_pga", 0.0) > 0.15) else 0,
-                    "vibration_intensity_g": packet.get("vibration_pga", 0.02),
-                    "battery_pct": 99.0,
-                    "is_simulated": 0
-                })
-            except Exception:
-                pass
-
-    # 2. Read live GPS hardware packets if GPS gateway is active
-    if st.session_state.gps_gateway and st.session_state.gps_gateway.is_connected:
-        gps_packet = st.session_state.gps_gateway.read_latest_packet()
-        if gps_packet:
-            target_u_id = gps_packet.get("unit_id")
-            for u in st.session_state.gps_units:
-                if u["unit_id"] == target_u_id:
-                    u["lat"] = gps_packet.get("lat", u["lat"])
-                    u["lon"] = gps_packet.get("lon", u["lon"])
-                    u["speed_kmh"] = gps_packet.get("speed_kmh", u["speed_kmh"])
-                    u["heading_deg"] = gps_packet.get("heading_deg", u["heading_deg"])
-                    u["altitude_m"] = gps_packet.get("altitude_m", u.get("altitude_m", 620.0))
-                    u["battery_pct"] = gps_packet.get("battery_pct", u.get("battery_pct", 95.0))
-                    u["health_status"] = gps_packet.get("health_status", "NOMINAL")
-                    u["satellites_in_view"] = gps_packet.get("satellites_in_view", u.get("satellites_in_view", 8))
-                    u["last_valid_ping"] = gps_packet.get("last_valid_ping", u["last_valid_ping"])
-                    u["data_source"] = "REAL_HARDWARE"
-                    u["is_simulated"] = False
-
-# Calculate real-time risk scores and categories across all stations
+# Evaluate real-time risk scores for all stations based on latest telemetry
 enriched_stations = enrich_station_telemetry(st.session_state.stations_telemetry)
 
-# Automated Safety Trigger: Log critical alert with cooldown protection
+# Automated Safety Trigger: Log alert when any station breaches Critical limit
 for stn in enriched_stations:
     if stn["risk_level"] == "CRITICAL":
         cooldown_val = int(get_config("alert_cooldown_minutes", "10"))
-        log_alert(
+        alert_id, created = log_alert(
             station_id=stn["id"],
             risk_level="CRITICAL",
             risk_score=stn["risk_score"],
@@ -251,6 +161,20 @@ for stn in enriched_stations:
             is_test=1 if st.session_state.emergency else 0,
             cooldown_minutes=cooldown_val
         )
+        if created:
+            bd = stn.get("breakdown", {})
+            log_risk_assessment({
+                "station_id": stn["id"],
+                "risk_score": stn["risk_score"],
+                "risk_level": stn["risk_level"],
+                "soil_factor_score": bd.get("soil", 0.0),
+                "rain_factor_score": bd.get("rain", 0.0),
+                "tilt_factor_score": bd.get("slope", 0.0),
+                "vib_factor_score": bd.get("vibration", 0.0),
+                "contributing_factors": stn.get("factors", []),
+                "recommended_action": stn.get("recommended_action", ""),
+                "assessment_mode": "DRILL" if st.session_state.emergency else "AUTOMATED"
+            })
 
 # ---------------------------------------------------------------------------
 # SECTION 7: Sidebar Navigation & Control Panel
@@ -280,189 +204,23 @@ with st.sidebar:
 
     # Operating Mode Selector (Simulation Stream vs Physical ESP32)
     st.markdown("<div class='hud-eyebrow'>OPERATING MODE</div>", unsafe_allow_html=True)
-    sim_toggle = st.checkbox(
-        "Simulation Mode (No Hardware Required)",
-        value=(st.session_state.operating_mode == "SIMULATION"),
-        help="Mutually exclusive: Check to generate realistic simulation data; uncheck to read from USB serial."
-    )
+    sim_toggle = st.toggle("Simulation Telemetry Stream", value=(st.session_state.operating_mode == "SIMULATION"))
     st.session_state.operating_mode = "SIMULATION" if sim_toggle else "HARDWARE"
 
-    # Simulation Testing Controls (Deterministic SIH Scenarios)
-    if st.session_state.operating_mode == "SIMULATION":
-        st.markdown("<div class='hud-eyebrow'>SIMULATION TEST SCENARIOS</div>", unsafe_allow_html=True)
-        
-        # 1. Test ESP32 Surge Button
-        if st.button("⚡ Test ESP32 Surge", use_container_width=True, help="Injects an acute sensor spike into node GG-001"):
-            for s in st.session_state.stations_telemetry:
-                if s["id"] == "GG-001":
-                    s["soil_adc"] = 3500
-                    s["soil_moisture_pct"] = 78.0
-                    s["temp_c"] = 0.5
-                    s["tilt"] = 2.80
-                    s["tilt_rate"] = 0.50
-                    s["vib"] = True
-                    s["vib_g"] = 0.42
-                    s["rainfall_intensity_mmh"] = 42.0
-                    s["rain_intensity"] = 42.0
-            st.toast("ESP32 acute telemetry surge injected into GG-001!", icon="⚡")
-            st.rerun()
+    # Emergency Crisis Drill Testing Controls
+    st.markdown("<div class='hud-eyebrow'>DRILL TESTING CONTROLS</div>", unsafe_allow_html=True)
+    if st.button("🚨 Trigger Emergency Drill", type="primary", use_container_width=True):
+        st.session_state.emergency = True
+        st.session_state.emergency_target = "GG-001"
+        st.toast("Emergency drill triggered on GG-001 Byasi Pass!", icon="🚨")
+        st.rerun()
 
-        # 2. Test Low Risk Button (< 40.0)
-        if st.button("🟢 Test Low Risk (< 40)", use_container_width=True, help="Sets deterministic readings producing score < 40 (Low Risk)"):
-            for s in st.session_state.stations_telemetry:
-                if s["id"] == "GG-001":
-                    s["soil_adc"] = 1500
-                    s["soil_moisture_pct"] = 20.0
-                    s["temp_c"] = 18.0
-                    s["tilt"] = 0.25
-                    s["tilt_rate"] = 0.01
-                    s["vib"] = False
-                    s["vib_g"] = 0.02
-                    s["rainfall_intensity_mmh"] = 1.5
-                    s["rain_intensity"] = 1.5
-            st.session_state.emergency = False
-            st.session_state.interlock_system.reset_interlock()
-            st.toast("Low Risk Scenario set on GG-001 (Score < 40)", icon="🟢")
-            st.rerun()
-
-        # 3. Test Moderate Risk Button (40.0 - 70.0)
-        if st.button("🟡 Test Moderate Risk (40-70)", use_container_width=True, help="Sets deterministic readings producing score 40-70 (Moderate Risk)"):
-            for s in st.session_state.stations_telemetry:
-                if s["id"] == "GG-001":
-                    s["soil_adc"] = 2350
-                    s["soil_moisture_pct"] = 48.0
-                    s["temp_c"] = 2.0  # freeze-thaw transition
-                    s["tilt"] = 1.60
-                    s["tilt_rate"] = 0.05
-                    s["vib"] = False
-                    s["vib_g"] = 0.16
-                    s["rainfall_intensity_mmh"] = 26.5
-                    s["rain_intensity"] = 26.5
-            st.session_state.emergency = False
-            st.toast("Moderate Risk Scenario set on GG-001 (40 <= Score <= 70)", icon="🟡")
-            st.rerun()
-
-        # 3b. Test Heavy Rain Event (Isolated 25% Rain Factor Test)
-        if st.button("🌧️ Test Heavy Rain (45 mm/h)", use_container_width=True, help="Injects an isolated extreme precipitation event into GG-001"):
-            for s in st.session_state.stations_telemetry:
-                if s["id"] == "GG-001":
-                    s["rainfall_intensity_mmh"] = 45.0
-                    s["rain_intensity"] = 45.0
-                    s["soil_moisture_pct"] = 62.0
-                    s["temp_c"] = 14.0
-                    s["tilt"] = 0.60
-                    s["vib_g"] = 0.05
-            st.toast("Heavy Rain Event (45 mm/h) injected into GG-001!", icon="🌧️")
-            st.rerun()
-
-        # 4. Test Critical Risk Button (> 70.0)
-        if st.button("🔴 Test Critical Risk (> 70)", type="primary", use_container_width=True, help="Sets deterministic readings producing score > 70 (Critical Danger & Interlock Trip)"):
-            for s in st.session_state.stations_telemetry:
-                if s["id"] == "GG-001":
-                    s["soil_adc"] = 3600
-                    s["soil_moisture_pct"] = 82.0
-                    s["temp_c"] = -1.5  # acute freeze-thaw wedging
-                    s["tilt"] = 3.80   # shear plane slip
-                    s["tilt_rate"] = 0.45
-                    s["vib"] = True
-                    s["vib_g"] = 0.45
-                    s["rainfall_intensity_mmh"] = 48.5
-                    s["rain_intensity"] = 48.5
-            st.session_state.emergency = True
-            st.session_state.emergency_target = "GG-001"
-            # Mobilize emergency QRT units
-            for u in st.session_state.gps_units:
-                if u["unit_id"] in ["UNIT-SAR-01", "UNIT-BRO-753"]:
-                    u["health_status"] = "DISPATCHED"
-                    u["incident_assignment"] = "CRISIS DISPATCH — Emergency Response to GG-001 Byasi Gorge"
-            st.toast("CRITICAL DANGER: Interlock tripped, Barrier CLOSED, Signals RED!", icon="🔴")
-            st.rerun()
-
-        # 5. Reset Test Scenario Button
-        if st.button("↺ Reset Test Scenario", use_container_width=True, help="Restores all sensor nodes and interlocks to nominal baselines"):
-            st.session_state.emergency = False
-            st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
-            st.session_state.gps_units = [dict(u) for u in DEFAULT_GPS_UNITS]
-            st.session_state.interlock_system.reset_interlock()
-            st.toast("All scenarios and actuators reset to nominal baseline.", icon="✅")
-            st.rerun()
-
-    else:
-        # Hardware Serial Receiver Management Console
-        st.markdown("<div class='hud-eyebrow'>ESP32 HARDWARE INTERFACE</div>", unsafe_allow_html=True)
-        gw = st.session_state.serial_gateway
-
-        # Auto-detect ESP32 on any USB port
-        detected_port, detected_desc = gw.auto_detect_esp32()
-        candidates = gw.get_port_candidates()
-
-        # Visual Auto-Detection Callout
-        if detected_port:
-            st.markdown(
-                f"<div style='background:rgba(16,185,129,0.12); border:1px solid #10B981; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
-                f"<div style='font-size:11px; font-weight:700; color:#10B981;'>⚡ ESP32 AUTO-DETECTED</div>"
-                f"<div style='font-size:13px; font-weight:600; color:#F3F4F6;'>Port: <code>{detected_port}</code></div>"
-                f"<div style='font-size:10px; color:#9CA3AF;'>{detected_desc}</div>"
-                f"</div>",
-                unsafe_allow_html=True
-            )
-        else:
-            st.markdown(
-                "<div style='background:rgba(245,158,11,0.12); border:1px solid #F59E0B; border-radius:6px; padding:6px 10px; margin-bottom:8px;'>"
-                "<div style='font-size:11px; font-weight:700; color:#F59E0B;'>⚠️ NO ESP32 DETECTED</div>"
-                "<div style='font-size:10px; color:#9CA3AF;'>Plug ESP32 into any USB port to auto-connect.</div>"
-                "</div>",
-                unsafe_allow_html=True
-            )
-
-        st.checkbox(
-            "⚡ Auto-Detect & Connect to Any Port",
-            value=st.session_state.get("auto_detect_esp", True),
-            key="auto_detect_esp",
-            help="Automatically detects which USB port your ESP32 is plugged into and establishes live telemetry."
-        )
-
-        # Build clean port choice labels
-        if candidates:
-            port_labels = [c["label"] for c in candidates]
-            if detected_port:
-                default_port_idx = next((i for i, c in enumerate(candidates) if c["device"] == detected_port), 0)
-            elif gw.is_connected:
-                default_port_idx = next((i for i, c in enumerate(candidates) if c["device"] == gw.port), 0)
-            else:
-                default_port_idx = 0
-        else:
-            avail_ports = gw.list_available_ports()
-            port_labels = avail_ports if avail_ports else ["COM19", "COM3", "COM4", "/dev/ttyUSB0"]
-            default_port_idx = 0
-
-        selected_label = st.selectbox("Serial Port (Auto-Ranked)", port_labels, index=default_port_idx)
-        selected_port = selected_label.split()[0].strip() if " " in selected_label else selected_label.strip()
-        selected_baud = st.selectbox("Baud Rate", [9600, 19200, 38400, 57600, 115200], index=4)
-
-        if not gw.is_connected:
-            btn_label = f"⚡ Connect ESP32 ({detected_port})" if detected_port else "🔌 Connect Receiver"
-            if st.button(btn_label, type="primary", use_container_width=True):
-                target_port = detected_port if detected_port else selected_port
-                success, msg = gw.connect(target_port, selected_baud)
-                if success:
-                    st.toast(f"Connected to {target_port}!", icon="🔌")
-                else:
-                    st.error(msg)
-                st.rerun()
-        else:
-            st.markdown(
-                f"<div style='font-size:12px; color:#10B981; margin-bottom:6px;'>● <b>Connected:</b> <code>{gw.port}</code> @ {gw.baud} baud</div>",
-                unsafe_allow_html=True
-            )
-            if st.button("⏹ Disconnect Receiver", use_container_width=True):
-                gw.disconnect()
-                st.toast("Disconnected from serial port.", icon="⏹")
-                st.rerun()
-
-        diag = gw.get_health_diagnostics()
-        st.caption(f"Status: **{diag['status']}**")
-        st.caption(f"Packets: **{diag['total_packets']}** | Errors: **{diag['malformed_rejected']}**")
+    if st.button("↺ Reset Status & Baselines", use_container_width=True):
+        st.session_state.emergency = False
+        st.session_state.dispatch_status = "Standby — All Sector Rescue Units Nominal"
+        st.session_state.stations_telemetry = [dict(s) for s in DEFAULT_STATIONS]
+        st.toast("System status reset to nominal baseline.", icon="✅")
+        st.rerun()
 
     st.divider()
 
@@ -476,15 +234,6 @@ with st.sidebar:
         )
         st.markdown(f"<div style='font-size: 11px; margin-bottom: 3px;'><span style='{badge_style}'>●</span> <b>{s['id']}</b>: {s['name'][:18]} <span style='float:right; {badge_style}'>{s['risk_score']}</span></div>", unsafe_allow_html=True)
 
-    # Mobile Asset Fleet Quick Status in Sidebar
-    st.markdown("<div style='height:6px;'></div>", unsafe_allow_html=True)
-    st.markdown("<div class='hud-eyebrow'>MOBILE ASSET FLEET</div>", unsafe_allow_html=True)
-    dispatched_units = [u for u in st.session_state.gps_units if u.get("health_status") == "DISPATCHED"]
-    if dispatched_units:
-        st.markdown(f"<div style='font-size: 11px; color: #EF4444;'>🚨 <b>{len(dispatched_units)} Unit(s) Dispatched</b></div>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<div style='font-size: 11px; color: #10B981;'>● <b>{len(st.session_state.gps_units)} Mobile Units</b> Nominal</div>", unsafe_allow_html=True)
-
     st.markdown("<hr style='border:0; border-top:1px solid #1F2937; margin: 12px 0;'>", unsafe_allow_html=True)
     
     # Telemetry Stepper Controls
@@ -496,11 +245,12 @@ with st.sidebar:
         auto_stream = st.checkbox("Auto Stream", value=st.session_state.auto_tick, help="Enables continuous telemetry refresh loop")
         st.session_state.auto_tick = auto_stream
 
-    st.caption("GeoGuard v2.5.0 • SIH 2024–2026 Edition")
+    st.caption("GeoGuard v2.4.0 • NH-58 Corridor")
 
 # ---------------------------------------------------------------------------
 # SECTION 8: Global Command Center HUD Header
 # ---------------------------------------------------------------------------
+# Displays real-time UTC/IST clocks, active nodes count, and link health.
 kpis = get_system_kpis(enriched_stations)
 render_hud_header(
     operating_mode=st.session_state.operating_mode,
@@ -512,25 +262,33 @@ render_hud_header(
 # ---------------------------------------------------------------------------
 # SECTION 9: Navigation Routing Dispatcher
 # ---------------------------------------------------------------------------
+# Routes user selection to the corresponding modular page renderer.
 if menu_selection.startswith("1."):
+    # Page 1: High-level overview, KPI cards, and live corridor telemetry matrix
     render_overview_page(enriched_stations)
 
 elif menu_selection.startswith("2."):
+    # Page 2: Live ESP32 monitoring, corridor baseline comparison & nearby alarm cascade
     render_live_sensor_page(enriched_stations)
 
 elif menu_selection.startswith("3."):
+    # Page 3: Full-width Folium GIS map with colored highway corridors and weather ribbon
     render_geographic_map_page(enriched_stations)
 
 elif menu_selection.startswith("4."):
+    # Page 4: Emergency alert management center, audit log, and status transitions
     render_alert_center_page(enriched_stations)
 
 elif menu_selection.startswith("5."):
+    # Page 5: Road closure controls, checkpoint runway schematic, and bypass detour advisories
     render_highway_safety_page(enriched_stations)
 
 elif menu_selection.startswith("6."):
+    # Page 6: CSV downloads (telemetry, alerts, roads) & formal incident dossiers
     render_reports_page(enriched_stations)
 
 elif menu_selection.startswith("7."):
+    # Page 7: Geotechnical thresholds configuration, alert cooldowns, and database tools
     render_settings_page()
 
 # ---------------------------------------------------------------------------
@@ -541,10 +299,6 @@ render_disclaimer()
 # ---------------------------------------------------------------------------
 # SECTION 11: Controlled Telemetry Auto-Stream Loop
 # ---------------------------------------------------------------------------
-# In HARDWARE mode with active connection, auto-refresh every 1.2s to stream live sensor readings
-if st.session_state.operating_mode == "HARDWARE" and gw.is_connected:
-    time.sleep(1.2)
-    st.rerun()
-elif st.session_state.auto_tick:
+if st.session_state.auto_tick:
     time.sleep(3)
     st.rerun()

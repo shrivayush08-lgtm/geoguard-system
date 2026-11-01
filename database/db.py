@@ -200,6 +200,24 @@ def init_db():
         ]
         cursor.executemany("INSERT INTO response_teams VALUES (?, ?, ?, ?, ?, ?, ?, ?)", default_teams)
 
+    
+    # Add separate Police Response Unit if it does not already exist
+    cursor.execute("""
+        INSERT OR IGNORE INTO response_teams
+        (team_id, team_name, authority, base_location, contact_channel,
+         status, current_assignment, last_dispatch_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "TEAM-POLICE-UK",
+        "Uttarakhand Police Response Unit",
+        "Uttarakhand Police",
+        "Garhwal Police Control",
+        "Police Wireless",
+        "STANDBY",
+        "None",
+        datetime.utcnow().isoformat()
+    ))
+
     # Check and seed default configuration settings
     cursor.execute("SELECT COUNT(*) FROM system_config")
     if cursor.fetchone()[0] == 0:
@@ -345,30 +363,50 @@ def get_alerts(status_filter=None, limit=100):
     conn.close()
     return df
 
+
 def update_alert_status(alert_id, new_status, operator_name="Authorized Operator", notes="", assigned_team=None):
-    """Updates the status and audit trail of an alert."""
+    """Updates the status, officer assignment, team and audit trail of an alert."""
     conn = get_connection()
     cursor = conn.cursor()
     now_str = datetime.utcnow().isoformat()
 
-    if new_status == "ACKNOWLEDGED":
-        cursor.execute('''
-            UPDATE alerts SET status = ?, acknowledged_by = ?, ack_timestamp = ?, operator_notes = ?
-            WHERE alert_id = ?
-        ''', (new_status, operator_name, now_str, notes, alert_id))
-    elif new_status == "RESOLVED" or new_status == "FALSE ALARM":
-        cursor.execute('''
-            UPDATE alerts SET status = ?, resolved_by = ?, res_timestamp = ?, operator_notes = ?
-            WHERE alert_id = ?
-        ''', (new_status, operator_name, now_str, notes, alert_id))
-    else:
-        cursor.execute('''
-            UPDATE alerts SET status = ?, operator_notes = ?, assigned_team = COALESCE(?, assigned_team)
-            WHERE alert_id = ?
-        ''', (new_status, notes, assigned_team, alert_id))
+    is_resolved = new_status in ("RESOLVED", "FALSE ALARM")
+
+    cursor.execute('''
+        UPDATE alerts
+        SET
+            status = ?,
+            acknowledged_by = CASE
+                WHEN ? = 0 THEN ?
+                ELSE acknowledged_by
+            END,
+            ack_timestamp = CASE
+                WHEN ? = 'ACKNOWLEDGED' THEN ?
+                ELSE ack_timestamp
+            END,
+            resolved_by = CASE
+                WHEN ? = 1 THEN ?
+                ELSE resolved_by
+            END,
+            res_timestamp = CASE
+                WHEN ? = 1 THEN ?
+                ELSE res_timestamp
+            END,
+            operator_notes = ?,
+            assigned_team = COALESCE(?, assigned_team)
+        WHERE alert_id = ?
+    ''', (
+        new_status,
+        int(is_resolved), operator_name,
+        new_status, now_str,
+        int(is_resolved), operator_name,
+        int(is_resolved), now_str,
+        notes, assigned_team, alert_id
+    ))
 
     conn.commit()
     conn.close()
+
 
 def get_road_sections():
     """Returns all highway road sections."""

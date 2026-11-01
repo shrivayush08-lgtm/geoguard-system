@@ -1,22 +1,10 @@
+
 """
 =============================================================================
 GEOGUARD — HIGHWAY INTELLIGENCE & LANDSLIDE EARLY WARNING SYSTEM
 Page: pages/reports.py
-Purpose: Regulatory Telemetry Archives, CSV Downloads & Formal Incident Dossiers
+Purpose: Telemetry Archives, Risk Assessment Exports & Incident Dossiers
 =============================================================================
-Provides:
-- One-click CSV exports for Telemetry History, Risk Assessments, Alerts, and Road Sections
-- Formal Geotechnical Incident Dossier generator (Markdown/HTML printable format)
-- Regulatory NDMA compliance audit formatting
-"""
-"""
-GEOGUARD | Reports & Downloads
-Dark mission-control design with one-click exports.
-"""
-"""
-GeoGuard Reports & Data Center — pages/reports.py
-Dashboard-style reporting page with one-click CSV exports and incident report
-preview plus PDF, HTML, and Markdown downloads.
 """
 
 import html
@@ -49,7 +37,7 @@ def val(row, key, default="Not recorded"):
     return value if value and value.lower() != "nan" else default
 
 
-def build_report(alert, stations):
+def build_report(alert, stations, roads_df=None):
     station_id = val(alert, "station_id")
 
     station = next(
@@ -73,9 +61,33 @@ def build_report(alert, stations):
     except (TypeError, ValueError):
         pass
 
+    # Correlate highway checkpoint & road status
+    checkpoint = "Not recorded"
+    road_status = "Not recorded"
+    if roads_df is not None and not roads_df.empty:
+        match_road = roads_df[roads_df["associated_station"].astype(str) == str(station_id)]
+        if not match_road.empty:
+            r = match_road.iloc[0]
+            checkpoint = f"{r['section_id']}: {r['name']}"
+            road_status = str(r['status']).strip().upper()
+
+    # Sensor telemetry from station if available
+    soil_moisture = f"{station.get('soil_moisture_pct')}% VWC" if station.get("soil_moisture_pct") is not None else "Not recorded"
+    slope_tilt = f"{station.get('tilt')}°" if station.get("tilt") is not None else "Not recorded"
+    rainfall_rate = f"{station.get('rainfall_intensity_mmh')} mm/h" if station.get("rainfall_intensity_mmh") is not None else "Not recorded"
+    temp_val = station.get("temp_c", station.get("temperature_c"))
+    temperature = f"{temp_val}°C" if temp_val is not None else "Not recorded"
+    seismic = "DETECTED 🔴" if station.get("vib") else ("STABLE 🟢" if station else "Not recorded")
+
+    officer = val(alert, "acknowledged_by")
+    if officer == "Not recorded":
+        officer = val(alert, "resolved_by", "Pending assignment")
+
     return {
         "id": val(alert, "alert_id"),
         "station": station_id,
+        "checkpoint": checkpoint,
+        "road_status": road_status,
         "location": val(station, "name", station_id),
         "corridor": val(station, "highway_corridor"),
         "coordinates": coordinates,
@@ -84,6 +96,16 @@ def build_report(alert, stations):
         "score": f"{score}/100" if score != "Not recorded" else score,
         "status": val(alert, "status", "NEW"),
         "reason": val(alert, "reason", "No trigger reason recorded."),
+        "assigned_team": val(alert, "assigned_team", "Unassigned"),
+        "officer": officer,
+        "ack_time": val(alert, "ack_timestamp", "N/A"),
+        "res_time": val(alert, "res_timestamp", "N/A"),
+        "soil_moisture": soil_moisture,
+        "slope_tilt": slope_tilt,
+        "rainfall_rate": rainfall_rate,
+        "temperature": temperature,
+        "seismic": seismic,
+        "operator_notes": val(alert, "operator_notes", "None"),
         "generated": datetime.now(timezone.utc).strftime(
             "%d %b %Y, %H:%M UTC"
         ),
@@ -142,18 +164,89 @@ border-radius:10px;padding:16px;margin-bottom:12px}}
 <div class="card"><div class="label">STATUS</div>
 <div class="value">{esc('status')}</div></div>
 </div>
-<div class="section"><h2>01 · Location & Detection</h2>
-<p><b>Location:</b> {esc('location')}</p>
+<div class="section"><h2>01 · Location & Checkpoint Identification</h2>
+<p><b>Highway checkpoint:</b> {esc('checkpoint')}</p>
+<p><b>Road transit status:</b> {esc('road_status')}</p>
+<p><b>Station location:</b> {esc('location')}</p>
 <p><b>Highway corridor:</b> {esc('corridor')}</p>
 <p><b>Coordinates:</b> {esc('coordinates')}</p>
 <p><b>Recorded timestamp:</b> {esc('time')}</p></div>
-<div class="section"><h2>02 · Trigger Evidence</h2>
+<div class="section"><h2>02 · Trigger Evidence & Physical Anomaly</h2>
 <p>{esc('reason')}</p></div>
+<div class="section"><h2>03 · Response Operations & Assignment</h2>
+<p><b>Assigned response unit:</b> {esc('assigned_team')}</p>
+<p><b>Assigned watch officer:</b> {esc('officer')}</p>
+<p><b>Acknowledgment timestamp:</b> {esc('ack_time')}</p>
+<p><b>Resolution timestamp:</b> {esc('res_time')}</p>
+<p><b>Field notes:</b> {esc('operator_notes')}</p></div>
+<div class="section"><h2>04 · Environmental & Sensor Telemetry</h2>
+<p><b>Soil moisture:</b> {esc('soil_moisture')}</p>
+<p><b>Slope inclinometer tilt:</b> {esc('slope_tilt')}</p>
+<p><b>Precipitation rate:</b> {esc('rainfall_rate')}</p>
+<p><b>Ambient temperature:</b> {esc('temperature')}</p>
+<p><b>Seismic ground shock:</b> {esc('seismic')}</p></div>
 <div class="notice"><b>Prototype notice</b><br>
 This system-generated dossier is not an official government warning or
 verified landslide prediction. Verify site conditions and response actions
 with qualified professionals and responsible authorities.</div>
 </main></body></html>"""
+
+
+def make_markdown(d):
+    return f"""# GeoGuard — Geotechnical Incident Dossier
+
+**Incident ID:** {d['id']}
+
+**Generated:** {d['generated']}
+
+## Incident Summary
+
+| Field | Recorded value |
+|---|---|
+| Station | {d['station']} |
+| Highway checkpoint | {d['checkpoint']} |
+| Road transit status | {d['road_status']} |
+| Station location | {d['location']} |
+| Highway corridor | {d['corridor']} |
+| Coordinates | {d['coordinates']} |
+| Timestamp | {d['time']} |
+| Risk level | {d['risk']} |
+| Risk index | {d['score']} |
+| Incident status | {d['status']} |
+
+## Trigger Evidence
+
+{d['reason']}
+
+## Response Operations & Assignment
+
+| Field | Recorded value |
+|---|---|
+| Assigned response unit | {d['assigned_team']} |
+| Assigned watch officer | {d['officer']} |
+| Acknowledgment timestamp | {d['ack_time']} |
+| Resolution timestamp | {d['res_time']} |
+| Field notes | {d['operator_notes']} |
+
+## Environmental & Sensor Telemetry
+
+| Sensor Factor | Recorded Reading |
+|---|---|
+| Soil moisture | {d['soil_moisture']} |
+| Slope inclinometer tilt | {d['slope_tilt']} |
+| Precipitation rate | {d['rainfall_rate']} |
+| Ambient temperature | {d['temperature']} |
+| Seismic ground shock | {d['seismic']} |
+
+---
+
+**Prototype notice:** This system-generated dossier is not an official
+government warning or verified landslide prediction. Verify site conditions
+and response actions with qualified professionals and responsible authorities.
+
+GeoGuard is an engineering prototype. Risk thresholds and outputs require
+field calibration and geotechnical validation.
+"""
 
 
 def render_reports_page(enriched_stations):
@@ -171,33 +264,40 @@ def render_reports_page(enriched_stations):
             "SELECT * FROM telemetry_history "
             "ORDER BY reading_id DESC LIMIT 1000"
         )
+        risk_assessments = read_table(
+            "SELECT * FROM risk_assessments "
+            "ORDER BY assessment_id DESC"
+        )
         alerts = read_table(
             "SELECT * FROM alerts ORDER BY alert_id DESC"
         )
         roads = get_road_sections()
         teams = get_response_teams()
+
     except Exception as exc:
         st.error("Could not load the report archive.")
         st.caption(str(exc))
         return
 
-    a, b, c, d = st.columns(4)
-    a.metric("Telemetry records", len(telemetry))
-    b.metric("Incident records", len(alerts))
-    c.metric("Road sections", len(roads))
-    d.metric("Response teams", len(teams))
+    a, b, c, d, e = st.columns(5)
+    a.metric("Telemetry", len(telemetry))
+    b.metric("Risk assessments", len(risk_assessments))
+    c.metric("Incident records", len(alerts))
+    d.metric("Road sections", len(roads))
+    e.metric("Response teams", len(teams))
 
     st.markdown("---")
     st.subheader("Data Export Center")
 
     exports = [
         ("Telemetry", telemetry, "telemetry"),
+        ("Risk Assessments", risk_assessments, "risk_assessments"),
         ("Incident Alerts", alerts, "alerts"),
         ("Road Sections", roads, "roads"),
         ("Response Teams", teams, "teams"),
     ]
 
-    columns = st.columns(4)
+    columns = st.columns(5)
     stamp = datetime.now().strftime("%Y%m%d_%H%M")
 
     for col, (title, frame, slug) in zip(columns, exports):
@@ -209,6 +309,7 @@ def render_reports_page(enriched_stations):
                 {len(frame)} records</p></div>""",
                 unsafe_allow_html=True,
             )
+
             st.download_button(
                 "Download CSV",
                 data=convert_df_to_csv(frame),
@@ -217,6 +318,9 @@ def render_reports_page(enriched_stations):
                 key=f"export_{slug}",
                 use_container_width=True,
             )
+
+            if frame.empty:
+                st.caption("No records available yet.")
 
     st.markdown("---")
     st.subheader("🚨 Geotechnical Incident Dossier")
@@ -236,16 +340,30 @@ def render_reports_page(enriched_stations):
         st.error("The alerts table does not contain alert_id.")
         return
 
-    # Most recent alert is selected automatically.
-    alert = alerts.iloc[0].to_dict()
-    report = build_report(alert, enriched_stations)
+    # Select any recorded incident, newest first.
+    st.markdown("### Select an Incident")
+
+    selected_index = st.selectbox(
+        "Incident archive",
+        options=list(range(len(alerts))),
+        format_func=lambda i: (
+            f"Incident #{val(alerts.iloc[i].to_dict(), 'alert_id')} · "
+            f"{val(alerts.iloc[i].to_dict(), 'timestamp')} · "
+            f"{val(alerts.iloc[i].to_dict(), 'risk_level', 'UNKNOWN')}"
+        ),
+        key="selected_incident_index",
+    )
+
+    alert = alerts.iloc[selected_index].to_dict()
+    report = build_report(alert, enriched_stations, roads_df=roads)
     report_html = make_html(report)
+    report_markdown = make_markdown(report)
 
     st.markdown(
         f"""<div style="background:#0A101A;border:1px solid #263B55;
         border-left:4px solid #FF4058;border-radius:10px;padding:18px">
         <div style="color:#36D6E7;letter-spacing:2px;font-size:11px">
-        LATEST RECORDED INCIDENT</div>
+        SELECTED RECORDED INCIDENT</div>
         <h2 style="margin-bottom:4px">Incident #{html.escape(report['id'])}</h2>
         <p style="color:#9DB0C8;margin-top:0">
         {html.escape(report['location'])} ·
@@ -259,7 +377,7 @@ def render_reports_page(enriched_stations):
     m3.metric("Status", report["status"])
 
     if st.button(
-        "↗ Open Latest Incident Dossier",
+        "↗ Open Selected Incident Dossier",
         type="primary",
         use_container_width=True,
     ):
@@ -267,26 +385,40 @@ def render_reports_page(enriched_stations):
 
     if st.session_state.get("dossier_open") == report["id"]:
         st.markdown("### Geotechnical Incident Dossier")
-        st.markdown(f"**Incident ID:** `{report['id']}`")
-        st.markdown(f"**Station:** {report['station']}")
-        st.markdown(f"**Location:** {report['location']}")
-        st.markdown(f"**Highway corridor:** {report['corridor']}")
-        st.markdown(f"**Coordinates:** {report['coordinates']}")
-        st.markdown(f"**Recorded timestamp:** {report['time']}")
-        st.markdown(f"**Risk level:** {report['risk']}")
-        st.markdown(f"**Risk index:** {report['score']}")
-        st.markdown(f"**Incident status:** {report['status']}")
+        st.markdown(f"**Incident ID:** `#{report['id']}`")
+        st.markdown(f"**Station:** {report['station']} — {report['location']}")
+        st.markdown(f"**Highway Checkpoint:** {report['checkpoint']} (Road Status: `{report['road_status']}`)")
+        st.markdown(f"**Corridor & Coordinates:** {report['corridor']} ({report['coordinates']})")
+        st.markdown(f"**Recorded Timestamp:** {report['time']}")
+        st.markdown(f"**Risk Level:** `{report['risk']}` | **Risk Score:** `{report['score']}`")
+        st.markdown(f"**Incident Status:** `{report['status']}`")
+        st.markdown(f"**Assigned Response Unit:** `{report['assigned_team']}` | **Duty Officer:** `{report['officer']}`")
+        st.markdown(f"**Environmental Telemetry:** Soil: `{report['soil_moisture']}` | Tilt: `{report['slope_tilt']}` | Rain: `{report['rainfall_rate']}` | Temp: `{report['temperature']}` | Seismic: `{report['seismic']}`")
         st.markdown("#### Recorded trigger")
         st.write(report["reason"])
 
-        st.download_button(
-            "⬇ Download / Open HTML Dossier",
-            data=report_html.encode("utf-8"),
-            file_name=f"GEO_INCIDENT_DOSSIER_{report['id']}.html",
-            mime="text/html",
-            use_container_width=True,
-            key=f"dossier_download_{report['id']}",
-        )
+        h, m = st.columns(2)
+
+        with h:
+            st.download_button(
+                "⬇ Download HTML Dossier",
+                data=report_html.encode("utf-8"),
+                file_name=f"GEO_INCIDENT_DOSSIER_{report['id']}.html",
+                mime="text/html",
+                use_container_width=True,
+                key=f"dossier_html_{report['id']}",
+            )
+
+        with m:
+            st.download_button(
+                "⬇ Download Markdown Dossier",
+                data=report_markdown.encode("utf-8"),
+                file_name=f"GEO_INCIDENT_DOSSIER_{report['id']}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key=f"dossier_md_{report['id']}",
+            )
+
         st.caption(
             "Open the downloaded HTML file in your browser. "
             "Use Print → Save as PDF to create a PDF copy."
